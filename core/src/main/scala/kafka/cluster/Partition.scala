@@ -1753,22 +1753,27 @@ class Partition(val topicPartition: TopicPartition,
           s"Partition state has been reset to the latest committed state $partitionState.")
         false
       case Errors.UNKNOWN_TOPIC_OR_PARTITION =>
+        partitionState = proposedIsrState.lastCommittedState
         debug(s"Failed to alter partition to $proposedIsrState since the controller doesn't know about " +
           "this topic or partition. Partition state may be out of sync, awaiting new the latest metadata.")
         false
       case Errors.UNKNOWN_TOPIC_ID =>
+        partitionState = proposedIsrState.lastCommittedState
         debug(s"Failed to alter partition to $proposedIsrState since the controller doesn't know about " +
           "this topic. Partition state may be out of sync, awaiting new the latest metadata.")
         false
       case Errors.FENCED_LEADER_EPOCH =>
+        partitionState = proposedIsrState.lastCommittedState
         debug(s"Failed to alter partition to $proposedIsrState since the leader epoch is old. " +
           "Partition state may be out of sync, awaiting new the latest metadata.")
         false
       case Errors.INVALID_UPDATE_VERSION =>
+        partitionState = proposedIsrState.lastCommittedState
         debug(s"Failed to alter partition to $proposedIsrState because the partition epoch is invalid. " +
           "Partition state may be out of sync, awaiting new the latest metadata.")
         false
       case Errors.INVALID_REQUEST =>
+        partitionState = proposedIsrState.lastCommittedState
         debug(s"Failed to alter partition to $proposedIsrState because the request is invalid. " +
           "Partition state may be out of sync, awaiting new the latest metadata.")
         false
