@@ -1,6 +1,10 @@
+org.apache.kafka.coordinator.common.runtime.CoordinatorBackgroundThreadPoolExecutorTest:
+- testMetrics
 org.apache.kafka.coordinator.common.runtime.CoordinatorExecutorImplTest:
+- testCancelAllTasks
 - testTaskCancelledAfterBeingExecutedButBeforeWriteOperationIsExecuted
 - testTaskCancelledBeforeBeingExecuted
+- testTaskCancelledWhileBeingExecuted
 - testTaskFailedLifecycle
 - testTaskSchedulingWriteOperationFailed
 - testTaskSuccessfulLifecycle
@@ -28,39 +32,46 @@ org.apache.kafka.coordinator.common.runtime.CoordinatorResultTest:
 - testEquals
 - testRecordsCannotBeNull
 org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeMetricsImplTest:
+- testBackgroundThreadIdleSensor
+- testBatchBufferCacheDiscardCount
+- testBatchBufferCacheSize
 - testEventQueueSize
-- testEventQueueSizeMetricsGroupIsolation
+- testFlushRateSensor
 - testHistogramMetrics
-- testHistogramMetricsGroupIsolation
-- testMetricNames
-- testNumPartitionsMetricsGroupIsolation
+- testMetricNamesWithBackgroundMetrics
+- testMetricNamesWithoutBackgroundMetrics
+- testMetricsGroupIsolation
 - testPartitionLoadSensorMetrics
-- testPartitionLoadSensorMetricsGroupIsolation
 - testRecordEventPurgatoryTimeLimit
 - testThreadIdleSensor
-- testThreadIdleSensorMetricsGroupIsolation
 - testUpdateNumPartitionsMetrics
 org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeTest:
+- testAdaptiveAppendLingerTime
+- testAdaptiveAppendLingerWithMaxBatchSizeFlush
+- testAdaptiveAppendLingerWithTransactionalWrite
 - testAppendRecordBatchSize
-- testBufferShrinkWhenMaxMessageSizeReducedBelowInitialBufferSize
+- testBufferShrinkWhenCachedBufferMaxBytesReducedBelowBatchSize
 - testCancelTimer
 - testClose
 - testCompleteTransactionEventCompletesOnlyOnce
 - testCompressibleRecordTriggersFlushAndSucceeds
 - testCoordinatorCompleteTransactionEventWriteTimeoutTaskIsCancelledWhenHighWatermarkIsUpdated
-- testCoordinatorDoNotRetainBufferLargeThanMaxMessageSize
+- testCoordinatorDoNotRetainBufferLargeThanCachedBufferMaxBytes
 - testCoordinatorExecutor
-- testCoordinatorRetainExpandedBufferLessOrEqualToMaxMessageSize
+- testCoordinatorRetainExpandedBufferLessOrEqualToCachedBufferMaxBytes
 - testEmptyBatch
 - testHighWatermarkUpdate
 - testHighWatermarkUpdateWithDeferredEventExceptions
+- testLargeCompressibleRecordDoesNotFlushEmptyBatch
 - testLargeCompressibleRecordTriggersFlushAndSucceeds
 - testLargeUncompressibleRecordTriggersFlushAndFails
+- testLingerTimeComparisonInMaybeFlushCurrentBatch
 - testNonRetryableTimer
-- testOnNewMetadataImage
+- testOnMetadataUpdate
 - testPartitionLoadGeneratesSnapshotAtHighWatermark
 - testPartitionLoadGeneratesSnapshotAtHighWatermarkNoRecordsLoaded
 - testPartitionLoadSensor
+- testRecordAppendLingerTime
 - testRecordEventPurgatoryTime
 - testRecordFlushTime
 - testRescheduleTimer
@@ -74,15 +85,20 @@ org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeTest:
 - testScheduleNonAtomicWriteOperationWhenWriteFails
 - testScheduleNonAtomicWriteOperationWithRecordTooLarge
 - testScheduleReadAllOp
+- testScheduleReadAllOpWhenClosed
 - testScheduleReadOp
+- testScheduleReadOpWhenClosed
 - testScheduleReadOpWhenOpsFails
 - testScheduleReadOpWhenPartitionInactive
 - testScheduleTimer
 - testScheduleTransactionCompletion
+- testScheduleTransactionCompletionWhenClosed
+- testScheduleTransactionCompletionWhenEpochValidationFails
 - testScheduleTransactionCompletionWhenReplayFails
 - testScheduleTransactionCompletionWhenWriteFails
 - testScheduleTransactionCompletionWhenWriteTimesOut
 - testScheduleTransactionalWriteOp
+- testScheduleTransactionalWriteOpWhenClosed
 - testScheduleTransactionalWriteOpWhenVerificationFails
 - testScheduleTransactionalWriteOperationWithBatching
 - testScheduleUnloading
@@ -91,8 +107,10 @@ org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeTest:
 - testScheduleUnloadingWithEmptyEpoch
 - testScheduleUnloadingWithException
 - testScheduleUnloadingWithStalePartitionEpoch
+- testScheduleWriteAllOpWhenClosed
 - testScheduleWriteAllOperation
 - testScheduleWriteOp
+- testScheduleWriteOpWhenClosed
 - testScheduleWriteOpWhenInactive
 - testScheduleWriteOpWhenOpFails
 - testScheduleWriteOpWhenReplayFails
@@ -104,10 +122,32 @@ org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeTest:
 - testScheduleWriteOperationWithBatchingWhenWriteFails
 - testStateChanges
 - testStateMachineIsReloadedWhenOutOfSync
+- testTimerIsScheduled
 - testTimerScheduleIfAbsent
 - testWriteEventCompletesOnlyOnce
 - testWriteEventWriteTimeoutTaskIsCancelledWhenHighWatermarkIsUpdated
 - testWriteOpIsNotReleasedWhenStateMachineIsNotCaughtUpAfterLoad
+org.apache.kafka.coordinator.common.runtime.CoordinatorTimerImplTest:
+- testCancelAll
+- testDefaultRetryBackoff
+- testScheduleIfAbsentWhenAbsent
+- testScheduleIfAbsentWhenPresent
+- testTaskCleanupOnFailedFutureWithoutOperationExecution
+- testTimerCancelledAfterExpiryButBeforeWriteOperation
+- testTimerCancelledBeforeExpiry
+- testTimerIgnoredOnCoordinatorLoadInProgressException
+- testTimerIgnoredOnNotCoordinatorException
+- testTimerNoRetryOnFailure
+- testTimerOverridden
+- testTimerRetryOnFailure
+- testTimerSuccessfulLifecycle
+org.apache.kafka.coordinator.common.runtime.DeferredEventCollectionTest:
+- testAddAndSize
+- testCompleteCallsAllEvents
+- testCompleteContinuesOnEventFailure
+- testCompleteWithException
+- testOfFactoryMethod
+- testOfFactoryMethodEmpty
 org.apache.kafka.coordinator.common.runtime.EventAccumulatorTest:
 - testAddFirst
 - testBasicOperations
@@ -130,6 +170,8 @@ org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataDeltaTest:
 org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataImageTest:
 - testEqualsAndHashcode
 - testKRaftCoordinatorMetadataImage
+- testTopicIdAndTopicName
+- testTopicIdAndTopicNameOfEmptyImage
 org.apache.kafka.coordinator.common.runtime.KafkaMetricHistogramTest:
 - testStats
 org.apache.kafka.coordinator.common.runtime.MultiThreadedEventProcessorTest:

@@ -1,9 +1,14 @@
+org.apache.kafka.connect.cli.AbstractConnectCliTest:
+- testStartConnectEnforcesCorrectOrder
 org.apache.kafka.connect.cli.ConnectStandaloneTest:
 - testParseJavaPropertiesFile
 - testParseJsonFileWithConnectorConfiguration
 - testParseJsonFileWithCreateConnectorRequest
 - testParseJsonFileWithCreateConnectorRequestWithUnknownField
 - testParseJsonFileWithCreateConnectorRequestWithoutInitialState
+org.apache.kafka.connect.connector.policy.AllowlistConnectorClientConfigOverridePolicyTest:
+- testAllowConfigs
+- testDenyAllByDefault
 org.apache.kafka.connect.connector.policy.NoneConnectorClientConfigOverridePolicyTest:
 - testNoOverrides
 - testWithOverrides
@@ -92,7 +97,9 @@ org.apache.kafka.connect.integration.ConnectWorkerIntegrationTest:
 - testBrokerCoordinator
 - testCompactedDeletedOlderConnectorConfig
 - testCreateConnectorWithPausedInitialState
+- testCreateSinkConnectorWithInitialOffsets
 - testCreateSinkConnectorWithStoppedInitialStateAndModifyOffsets
+- testCreateSourceConnectorWithInitialOffsets
 - testCreateSourceConnectorWithStoppedInitialStateAndModifyOffsets
 - testDeleteConnectorCreatedWithPausedOrStoppedInitialState
 - testPatchConnectorConfig
@@ -109,11 +116,14 @@ org.apache.kafka.connect.integration.ConnectWorkerIntegrationTest:
 - testTasksMaxEnforcement
 org.apache.kafka.connect.integration.ConnectorClientPolicyIntegrationTest:
 - testCreateWithAllowedOverridesForAllPolicy
+- testCreateWithAllowedOverridesForAllowlistPolicy
 - testCreateWithAllowedOverridesForDefaultPolicy
 - testCreateWithAllowedOverridesForPrincipalPolicy
 - testCreateWithNoAllowedOverridesForNonePolicy
+- testCreateWithNotAllowedOverridesForAllowlistPolicy
 - testCreateWithNotAllowedOverridesForPrincipalPolicy
 - testCreateWithOverridesForNonePolicy
+- testCreateWithoutOverridesForAllowlistPolicy
 org.apache.kafka.connect.integration.ConnectorRestartApiIntegrationTest:
 - testFailedConnectorRestartBothConnectorAndTasks
 - testFailedConnectorRestartOnlyConnector
@@ -136,6 +146,7 @@ org.apache.kafka.connect.integration.ConnectorTopicsIntegrationTest:
 - testTopicTrackingIsDisabled
 - testTopicTrackingResetIsDisabled
 org.apache.kafka.connect.integration.ConnectorValidationIntegrationTest:
+- testConnectorDeclaredConfigProviderDoesNotContainResolvedValue
 - testConnectorHasAbstractConverter
 - testConnectorHasAbstractHeaderConverter
 - testConnectorHasConverterThatThrowsExceptionOnInstantiation
@@ -157,6 +168,7 @@ org.apache.kafka.connect.integration.ConnectorValidationIntegrationTest:
 - testConnectorHasMissingPredicateClass
 - testConnectorHasMissingTransformClass
 - testConnectorHasNegationForUndefinedPredicate
+- testMissingConnectorClassErrorDoesNotContainResolvedValue
 - testSinkConnectorDeadLetterQueueTopicInTopicsList
 - testSinkConnectorDeadLetterQueueTopicMatchesTopicsRegex
 - testSinkConnectorDefaultGroupIdConflictsWithWorkerGroupId
@@ -164,6 +176,9 @@ org.apache.kafka.connect.integration.ConnectorValidationIntegrationTest:
 - testSinkConnectorHasNeitherTopicsListNorTopicsRegex
 - testSinkConnectorOverriddenGroupIdConflictsWithWorkerGroupId
 - testSourceConnectorHasDuplicateTopicCreationGroups
+- testValidationErrorMessagesDoNotContainResolvedValueOnTypeMismatch
+- testValidationErrorMessagesDoNotContainResolvedValueOnValidatorRejection
+- testValidationResponseDoesNotContainResolvedValue
 org.apache.kafka.connect.integration.ErrorHandlingIntegrationTest:
 - testErrantRecordReporter
 - testSkipRetryAndDLQWithHeaders
@@ -184,6 +199,7 @@ org.apache.kafka.connect.integration.InternalTopicsIntegrationTest:
 - testCreateInternalTopicsWithDefaultSettings
 - testCreateInternalTopicsWithFewerReplicasThanBrokers
 - testFailToCreateInternalTopicsWithMoreReplicasThanBrokers
+- testFailToStartWhenInternalTopicsAreMissingWithDisabledInternalTopicCreation
 - testFailToStartWhenInternalTopicsAreNotCompacted
 - testStartWhenInternalTopicsCreatedManuallyWithCompactForBrokersDefaultCleanupPolicy
 org.apache.kafka.connect.integration.MonitorableSinkIntegrationTest:
@@ -269,6 +285,7 @@ org.apache.kafka.connect.runtime.AbstractHerderTest:
 - testClientConfigOverridePolicyWithMetrics
 - testConfigProviderRegex
 - testConfigValidationAllOverride
+- testConfigValidationAllowlistOverride
 - testConfigValidationEmptyConfig
 - testConfigValidationInvalidTopics
 - testConfigValidationMissingName
@@ -288,6 +305,7 @@ org.apache.kafka.connect.runtime.AbstractHerderTest:
 - testConnectorStatusMissingPlugin
 - testConnectors
 - testConverterPluginConfig
+- testDifferenceInConfigDefAndValidation
 - testGenerateResultWithConfigValuesAllUsingConfigKeysAndWithNoErrors
 - testGenerateResultWithConfigValuesAllUsingConfigKeysAndWithSomeErrors
 - testGenerateResultWithConfigValuesMoreThanConfigKeysAndWithSomeErrors
@@ -300,6 +318,13 @@ org.apache.kafka.connect.runtime.AbstractHerderTest:
 - testHeaderConverterPluginConfig
 - testPauseConnector
 - testPredicatePluginConfig
+- testRedactResolvedValuesLeavesUnsubstitutedKeysUnchanged
+- testRedactResolvedValuesNoSubstitutions
+- testRedactResolvedValuesReplacesErrorMessages
+- testRedactResolvedValuesReplacesValueWithPlaceholder
+- testRemoveCustomConfigProviders
+- testRemoveCustomConfigProvidersNoProviders
+- testRepeatedConfigValidationOfInvalidVersionSurfacesAvailableVersions
 - testResumeConnector
 - testReverseTransformConfigs
 - testSinkConnectorPluginConfig
@@ -333,6 +358,8 @@ org.apache.kafka.connect.runtime.AbstractWorkerSourceTaskTest:
 - testTopicCreateSucceedsWhenCreateReturnsNewTopicFound
 - testTopicCreateWhenTopicExists
 - testTopicDescribeFails
+org.apache.kafka.connect.runtime.CachedConnectorsTest:
+- testCachedInvalidVersionFailurePreservesAvailableVersions
 org.apache.kafka.connect.runtime.ConnectMetricsTest:
 - testConnectorPluginMetrics
 - testDisableJmxReporter
@@ -615,6 +642,7 @@ org.apache.kafka.connect.runtime.WorkerTest:
 - testConnectorGeneratesTooManyTasksAndMaxEnforced
 - testConnectorGeneratesTooManyTasksButMaxNotEnforced
 - testConnectorStatusMetricsGroup_taskStatusCounter
+- testConnectorStatusMetricsGroup_tasksFailedToStart
 - testConsumerConfigsClientOverridesWithNonePolicy
 - testConsumerConfigsWithClientOverrides
 - testConsumerConfigsWithOverrides
@@ -637,17 +665,27 @@ org.apache.kafka.connect.runtime.WorkerTest:
 - testOffsetStoreForExactlyOnceSourceTask
 - testOffsetStoreForRegularSourceConnector
 - testOffsetStoreForRegularSourceTask
+- testProducerConfigsIgnoreUserSpecifiedBootstrapResolveTimeout
 - testProducerConfigsWithClientOverrides
 - testProducerConfigsWithOverrides
 - testProducerConfigsWithoutOverrides
 - testReconfigureConnectorTasks
 - testRegularSourceOffsetsConsumerConfigs
+- testReplaceOffsetsSinkConnectorInvalidOffsetFailsBeforeAnyAdminWrite
+- testReplaceOffsetsSinkConnectorNoPreexistingOffsets
+- testReplaceOffsetsSinkConnectorWipesStalePartitions
+- testReplaceOffsetsSourceConnectorFrameworkManagedMessage
+- testReplaceOffsetsSourceConnectorNoPreexistingOffsets
+- testReplaceOffsetsSourceConnectorWipesStalePartitions
 - testResetOffsetsSinkConnector
 - testResetOffsetsSinkConnectorDeleteConsumerGroupError
 - testResetOffsetsSourceConnectorExactlyOnceSupportEnabled
 - testStartAndStopConnector
 - testStartConnectorFailure
 - testStartTaskFailure
+- testStartTaskFailureAfterConverterWrappingClosesConverterPlugins
+- testStartTaskFailureDuringConverterCreationClosesAlreadyCreatedConverter
+- testStartTaskFailureWhenWrappingConverterClosesRawConverter
 - testStartTaskWithTooManyTaskConfigsAndMaxEnforced
 - testStartTaskWithTooManyTaskConfigsButMaxNotEnforced
 - testStopInvalidConnector
@@ -689,6 +727,7 @@ org.apache.kafka.connect.runtime.distributed.DistributedConfigTest:
 - shouldFailWithInvalidKeyAlgorithm
 - shouldFailWithInvalidKeySize
 - shouldIdentifyNeedForTransactionalLeader
+- shouldIgnoreUserSpecifiedBootstrapResolveTimeout
 - shouldNotAllowNegativePartitionsLessThanNegativeOne
 - shouldNotAllowNegativeReplicationFactorLessThanNegativeOne
 - shouldNotAllowZeroPartitions
@@ -731,6 +770,10 @@ org.apache.kafka.connect.runtime.distributed.DistributedHerderTest:
 - testCreateConnectorAlreadyExists
 - testCreateConnectorConfigBackingStoreError
 - testCreateConnectorFailedValidation
+- testCreateConnectorWithInitialOffsets
+- testCreateConnectorWithInitialOffsetsConfigWriteFails
+- testCreateConnectorWithInitialOffsetsNullOffsetValue
+- testCreateConnectorWithInitialOffsetsPreconditionRecheckFails
 - testCreateConnectorWithInitialState
 - testDestroyConnector
 - testDoRestartConnectorAndTasksBoth
@@ -922,7 +965,11 @@ org.apache.kafka.connect.runtime.isolation.DelegatingClassLoaderTest:
 - testEmptyGetResource
 - testEmptyLoadClass
 - testInitializedConnectorLoader
+- testInitializedConnectorLoaderWithVersion
 - testInitializedLoadClass
+- testInitializedPluginLoader
+- testInitializedPluginLoaderWithClassLoader
+- testInitializedPluginLoaderWithVersion
 org.apache.kafka.connect.runtime.isolation.MultiVersionTest:
 - testBundledPluginLoading
 - testCorrectVersionRange
@@ -984,10 +1031,14 @@ org.apache.kafka.connect.runtime.isolation.PluginUtilsTest:
 - testThirdPartyClasses
 - testTransformsClasses
 org.apache.kafka.connect.runtime.isolation.PluginsTest:
+- newConfigProviderShouldCloseConfigProviderWhenConfigureFails
 - newConfigProviderShouldConfigureWithPluginClassLoader
 - newConnectorShouldInstantiateWithPluginClassLoader
+- newConverterShouldCloseConverterWhenConfigureFails
 - newConverterShouldConfigureWithPluginClassLoader
+- newHeaderConverterShouldCloseHeaderConverterWhenConfigureFails
 - newHeaderConverterShouldConfigureWithPluginClassLoader
+- newInternalConverterShouldCloseConverterWhenConfigureFails
 - newPluginShouldInstantiateWithPluginClassLoader
 - newPluginShouldServiceLoadWithPluginClassLoader
 - newPluginsShouldConfigureWithPluginClassLoader
@@ -1039,6 +1090,9 @@ org.apache.kafka.connect.runtime.rest.ConnectRestServerTest:
 - testMonitorableConnectRestExtension
 - testOptionsDoesNotIncludeWadlOutput
 - testRequestLogs
+- testRestExtensionsRegisteredWithAdminListener
+- testRestExtensionsWithDisabledAdminListener
+- testRestExtensionsWithoutAdminListener
 - testStandaloneConfig
 - testValidCustomizedHttpResponseHeaders
 org.apache.kafka.connect.runtime.rest.InternalRequestSignatureTest:
@@ -1075,17 +1129,35 @@ org.apache.kafka.connect.runtime.rest.RestServerConfigTest:
 - testListenersConfigAllowedValues
 - testListenersConfigNotAllowedValues
 - testValidHeaderConfigs
+org.apache.kafka.connect.runtime.rest.entities.ConnectorInfoTest:
+- testConvenienceConstructorLeavesOffsetsStatusNull
+- testDeserializeLegacyBodyWithoutOffsetsStatus
+- testOffsetsStatusOmittedWhenNull
+- testOffsetsStatusPresentWhenSet
+- testRoundTripWithOffsetsStatus
+- testRoundTripWithoutOffsetsStatus
+- testWithOffsetsStatus
 org.apache.kafka.connect.runtime.rest.entities.ConnectorOffsetsTest:
 - testConnectorOffsetsToMap
 org.apache.kafka.connect.runtime.rest.entities.ConnectorTypeTest:
 - testForValue
 - testToStringIsLowerCase
 org.apache.kafka.connect.runtime.rest.entities.CreateConnectorRequestTest:
+- testDeserializeNullOffsetValue
+- testDeserializeSinkInitialOffsets
+- testDeserializeSourceInitialOffsets
 - testForValue
+- testInitialOffsetsAbsentIsNull
+- testInitialOffsetsEmptyListIsEmptyMap
+- testInitialOffsetsRoundTrip
+- testThreeArgConstructorLeavesInitialOffsetsNull
 - testToTargetState
+- testUnknownFieldRejected
 org.apache.kafka.connect.runtime.rest.entities.PluginInfoTest:
 - testNoVersionFilter
+- testPluginInfoJsonSerialization
 org.apache.kafka.connect.runtime.rest.resources.ConnectorPluginsResourceTest:
+- testConnectorPluginsEndpointReturnsLowercaseTypeInJson
 - testConnectorPluginsIncludesClassTypeAndVersionInformation
 - testGetConnectorConfigDef
 - testListAllPlugins
@@ -1112,6 +1184,7 @@ org.apache.kafka.connect.runtime.rest.resources.ConnectorsResourceTest:
 - testCreateConnectorNotLeader
 - testCreateConnectorWithControlSequenceInName
 - testCreateConnectorWithHeaders
+- testCreateConnectorWithInitialOffsets
 - testCreateConnectorWithPausedInitialState
 - testCreateConnectorWithRunningInitialState
 - testCreateConnectorWithSpecialCharsInName
@@ -1181,8 +1254,10 @@ org.apache.kafka.connect.runtime.rest.resources.RootResourceTest:
 org.apache.kafka.connect.runtime.rest.util.SSLUtilsTest:
 - testCreateClientSideSslContextFactory
 - testCreateClientSideSslContextFactoryDefaultValues
+- testCreateClientSideSslContextFactoryWithListenerPrefixedConfigs
 - testCreateServerSideSslContextFactory
 - testCreateServerSideSslContextFactoryDefaultValues
+- testCreateServerSideSslContextFactoryWithListenerPrefixedConfigs
 - testGetOrDefault
 org.apache.kafka.connect.runtime.standalone.StandaloneConfigTest:
 - testRestServerNonPrefixedSslConfigs
@@ -1194,6 +1269,10 @@ org.apache.kafka.connect.runtime.standalone.StandaloneHerderTest:
 - testCreateAndStop
 - testCreateConnectorAlreadyExists
 - testCreateConnectorFailedValidation
+- testCreateConnectorWithInitialOffsets
+- testCreateConnectorWithInitialOffsetsConfigWriteFails
+- testCreateConnectorWithInitialOffsetsNullOffsetValue
+- testCreateConnectorWithInitialOffsetsOffsetsWriteFails
 - testCreateConnectorWithStoppedInitialState
 - testCreateSinkConnector
 - testCreateSourceConnector
@@ -1270,6 +1349,10 @@ org.apache.kafka.connect.storage.KafkaConfigBackingStoreTest:
 - testStartStop
 - testTaskCountRecordsAndGenerations
 - testWritePrivileges
+org.apache.kafka.connect.storage.KafkaOffsetBackingStoreGetTopicConfigTest:
+- testConnectorSpecificReadOnlyStoreReturnsCorrectTopicConfig
+- testConnectorSpecificReadWriteStoreReturnsCorrectTopicConfig
+- testWorkerLevelStoreReturnsCorrectTopicConfig
 org.apache.kafka.connect.storage.KafkaOffsetBackingStoreTest:
 - testClientIds
 - testConnectorPartitions
@@ -1320,6 +1403,9 @@ org.apache.kafka.connect.storage.MemoryStatusBackingStoreTest:
 - deleteTaskStatus
 - putAndGetConnectorStatus
 - putAndGetTaskStatus
+org.apache.kafka.connect.storage.OffsetStorageReaderTest:
+- testClosingOffsetReaderWhenOffsetStoreHangs
+- testClosingOffsetReaderWhenOffsetStoreHangsAndHasIncompleteFutures
 org.apache.kafka.connect.storage.OffsetStorageWriterTest:
 - testAlreadyFlushing
 - testCancelAfterAwaitFlush

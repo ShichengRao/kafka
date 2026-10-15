@@ -45,6 +45,8 @@ org.apache.kafka.tools.ClientMetricsCommandTest:
 - testOptionsListSucceeds
 - testOptionsNoActionFails
 org.apache.kafka.tools.ClusterToolTest:
+- testApiVersionsCommandOutputUsingBrokerServer
+- testApiVersionsCommandOutputUsingController
 - testClusterId
 - testClusterIdWithBootstrapController
 - testClusterTooOldToHaveId
@@ -52,6 +54,7 @@ org.apache.kafka.tools.ClusterToolTest:
 - testCommandConfigAndDeprecatedConfigPresent
 - testDeprecatedConfig
 - testLegacyModeClusterCannotUnregisterBroker
+- testLegacyModeClusterCannotUnregisterController
 - testListEndpointsArgumentWithBootstrapController
 - testListEndpointsArgumentWithBootstrapServer
 - testListEndpointsWithBootstrapController
@@ -59,18 +62,28 @@ org.apache.kafka.tools.ClusterToolTest:
 - testPrintClusterId
 - testUnregister
 - testUnregisterBroker
+- testUnregisterController
 - testUnregisterWithBootstrapController
 org.apache.kafka.tools.ConfigCommandIntegrationTest:
 - testAddConfigKeyValuesUsingCommand
+- testAlterBrokerConfigWithOfflineBroker
 - testAlterReadOnlyConfigInKRaftThenShouldFail
+- testAlterStreamsGroupHeartbeatInterval
 - testAlterStreamsGroupNumOfStandbyReplicas
+- testAlterStreamsGroupNumWarmupReplicas
+- testAlterStreamsGroupSessionTimeout
+- testAlterStreamsGroupTaskOffsetInterval
+- testBrokerLoggerConfigUpdate
 - testClientMetricsConfigUpdate
+- testDeleteNonExistentConfigIsIdempotent
+- testDeleteNonExistentConfigIsIdempotentWithBootstrapController
 - testDescribeGroupWithoutDynamicConfigs
 - testDescribeNonExistentConfigResource
 - testDescribeStreamsGroupConfigs
 - testDynamicBrokerConfigUpdateUsingKraft
 - testExitWithNonZeroStatusOnUpdatingUnallowedConfig
 - testGroupConfigUpdateUsingKraft
+- testIntervalMsParser
 - testNullStatusOnKraftCommandAlterClientMetrics
 - testNullStatusOnKraftCommandAlterGroup
 - testNullStatusOnKraftCommandAlterUserQuota
@@ -86,6 +99,7 @@ org.apache.kafka.tools.ConfigCommandTest:
 - shouldAddBrokerLoggerConfig
 - shouldAddClientConfig
 - shouldAddDefaultBrokerDynamicConfig
+- shouldAllowDeletingNonExistingConfig
 - shouldAlterClientMetricsConfig
 - shouldAlterGroupConfig
 - shouldAlterTopicConfig
@@ -115,7 +129,6 @@ org.apache.kafka.tools.ConfigCommandTest:
 - shouldNotUpdateBrokerConfigIfMalformedBracketConfig
 - shouldNotUpdateBrokerConfigIfMalformedConfig
 - shouldNotUpdateBrokerConfigIfMalformedEntityName
-- shouldNotUpdateConfigIfNonExistingConfigIsDeleted
 - shouldParseArgumentsForBrokerLoggersEntityTypeWithBrokerBootstrap
 - shouldParseArgumentsForBrokerLoggersEntityTypeWithControllerBootstrap
 - shouldParseArgumentsForBrokersEntityTypeWithBrokerBootstrap
@@ -134,6 +147,9 @@ org.apache.kafka.tools.ConfigCommandTest:
 - testAlterIpConfig
 - testDescribeAllBrokerConfig
 - testDescribeAllTopicConfig
+- testDescribeGroupConfigOldBroker
+- testDescribeGroupConfigOldBrokerNotAuthorized
+- testDescribeGroupConfigOldBrokerUnexpectedException
 - testDescribeIpConfigs
 - testEntityDefaultForType
 - testEntityDefaultOptionWithAlterBrokerLoggerIsNotAllowed
@@ -141,7 +157,20 @@ org.apache.kafka.tools.ConfigCommandTest:
 - testNoSpecifiedEntityOptionWithDescribeBrokersInBootstrapServerIsAllowed
 - testOptionEntityTypeNames
 - testParseConfigsToBeAddedForAddConfigFile
+org.apache.kafka.tools.ConnectInternalTopicsTest:
+- testCreateInternalTopicsWithDefaultValues
+- testCreateMissingTopics
+- testEmptyTopicNamesInWorkerConfig
+- testNoTopicNamesInWorkerConfig
+- testNoWorkerConfig
+- testTopicConfigOverrides
+- testWorkerConfigBlank
+- testWorkerConfigFileDoesNotExist
 org.apache.kafka.tools.ConnectPluginPathTest:
+- testListEmptyPluginPathArg
+- testListEmptyPluginPathElementArg
+- testListEmptyPluginPathElementInWorkerConfig
+- testListEmptyPluginPathInWorkerConfig
 - testListMultipleLocations
 - testListMultiplePluginPaths
 - testListMultipleWorkerConfigs
@@ -208,11 +237,51 @@ org.apache.kafka.tools.DelegationTokenCommandTest:
 org.apache.kafka.tools.DeleteRecordsCommandTest:
 - testCommand
 - testCommandConfigNotExists
+- testExecuteDuplicatePartitionsWithoutCluster
+- testExecutePartitionErrorWithMockAdmin
+- testExecuteSuccessOutputWithMockAdmin
 - testOffsetFileNotExists
 - testParse
+- testParseInvalidJsonThrows
 - testWrongPartitions
 - testWrongVersion
+org.apache.kafka.tools.DumpLogSegmentsTest:
+- testBatchAndRecordMetadataOutput
+- testDumpControlRecord
+- testDumpEmptyIndex
+- testDumpFileWithNoDotInName
+- testDumpIndexMismatches
+- testDumpMetadataRecords
+- testDumpMetadataSnapshot
+- testDumpProducerIdSnapshot
+- testDumpProducerIdSnapshotCorrupt
+- testDumpProducerIdSnapshotWithBatchMetadata
+- testDumpRemoteLogMetadataEmpty
+- testDumpRemoteLogMetadataIoException
+- testDumpRemoteLogMetadataMultipleRecordsMultipleBatches
+- testDumpRemoteLogMetadataMultipleRecordsOneBatch
+- testDumpRemoteLogMetadataNoFilesFlag
+- testDumpRemoteLogMetadataNoSuchFileException
+- testDumpRemoteLogMetadataNonZeroStartingOffset
+- testDumpRemoteLogMetadataOneRecordOneBatch
+- testDumpRemoteLogMetadataWithCorruption
+- testDumpTimeIndexErrors
+- testDumpTxnIndex
+- testDumpUnknownFileSuffix
+- testIndexSanityCheck
+- testInvalidDecoderClass
+- testLegacyRecordBatchOutputFormat
+- testOffsetsMessageParser
+- testPrintDataLog
+- testPrintDataLogPartialBatches
+- testPrintTrailingBytes
+- testShareGroupStateMessageParser
+- testTimeIndexDumpErrorsPrintErrors
+- testTimeIndexVerifyOnly
+- testTransactionLogMessageParser
 org.apache.kafka.tools.EndToEndLatencyTest:
+- shouldAcceptMinusOneForRecordHeaderValueSize
+- shouldAcceptValidNamedArgs
 - shouldFailWhenConsumerRecordsIsEmpty
 - shouldFailWhenReceivedMoreThanOneRecord
 - shouldFailWhenSentHeaderKeyIsNotEqualToReceived
@@ -220,16 +289,18 @@ org.apache.kafka.tools.EndToEndLatencyTest:
 - shouldFailWhenSentRecordIsNotEqualToReceived
 - shouldFailWhenSentRecordKeyIsNotEqualToReceived
 - shouldPassInValidation
-- shouldPassWithNamedArgs
 - testConvertLegacyArgs
 - testInvalidArgs
 org.apache.kafka.tools.FeatureCommandTest:
 - testDescribeWithKRaft
 - testDescribeWithKRaftAndBootstrapControllers
+- testDescribeWithUnstableApiVersions
+- testDescribeWithUnstableFeatureVersions
 - testDowngradeMetadataVersionWithKRaft
 - testDowngradeType
 - testDowngradeWithReleaseVersion
 - testHandleDescribe
+- testHandleDescribeWithNegativeNodeId
 - testHandleDisable
 - testHandleDisableDryRun
 - testHandleDowngrade
@@ -240,12 +311,14 @@ org.apache.kafka.tools.FeatureCommandTest:
 - testHandleFeatureDependenciesForInvalidVersionFormat
 - testHandleFeatureDependenciesForMultipleFeatures
 - testHandleFeatureDependenciesForUnknownFeature
+- testHandleRemoteCommandWithoutBootstrap
 - testHandleUpgradeToLowerVersion
 - testHandleUpgradeToLowerVersionDryRun
 - testHandleUpgradeToUnsupportedMetadataVersion
 - testHandleVersionMappingWithInvalidReleaseVersion
 - testHandleVersionMappingWithNoReleaseVersion
 - testHandleVersionMappingWithValidReleaseVersion
+- testHandleVersionMappingWithoutBootstrap
 - testIncompatibleUpgradeFlags
 - testInvalidReleaseVersion
 - testLevelToString
@@ -352,15 +425,13 @@ org.apache.kafka.tools.LeaderElectionCommandErrorTest:
 - testPartitionWithoutTopic
 - testTopicWithoutPartition
 org.apache.kafka.tools.LeaderElectionCommandTest:
-- testAllTopicPartition
 - testCommandConfig
 - testCommandConfigAndDeprecatedConfigPresent
 - testDeprecatedAdminConfig
 - testElectionResultOutput
-- testPathToJsonFile
 - testPreferredReplicaElection
 - testTopicDoesNotExist
-- testTopicPartition
+- testUncleanLeaderElectionInputModes
 org.apache.kafka.tools.LineMessageReaderTest:
 - testDemarcationsLongerThanOne
 - testHeaderDemarcationCollision
@@ -379,6 +450,9 @@ org.apache.kafka.tools.LineMessageReaderTest:
 - testNullMarkerHeaderKeyThrows
 - testNullMarkerWithHeaders
 - testParseHeaderEnabledWithCustomDelimiterAndVaryingNumberOfKeyValueHeaderPairs
+org.apache.kafka.tools.LogCompactionTesterTest:
+- testConsumeMessagesDoesNotStopAtEmptyPollBeforeEndOffset
+- testConsumeMessagesFailsWhenNoProgress
 org.apache.kafka.tools.LogDirsCommandTest:
 - shouldNotThrowWhenDuplicatedBrokers
 - shouldQueryAllBrokersIfNonSpecified
@@ -390,7 +464,7 @@ org.apache.kafka.tools.LogDirsCommandTest:
 - testLogDirsWithoutBrokers
 org.apache.kafka.tools.MetadataQuorumCommandErrorTest:
 - testDescribeOptions
-- testPropertiesFileDoesNotExists
+- testPropertiesFileDoesNotExist
 - testRelativeTimeMs
 - testRemoveControllerRequiresControllerDirectoryId
 - testRemoveControllerRequiresControllerId
@@ -419,6 +493,11 @@ org.apache.kafka.tools.MetadataQuorumCommandUnitTest:
 - testGetMetadataDirectoryIdWhenThereIsNoId
 - testGetNegativeControllerId
 - testRemoveControllerDryRun
+- testRemoveControllerDryRunWithUnregister
+- testRemoveControllerFailsWithUnsupportedVersion
+- testRemoveControllerFailsWithVoterNotFound
+- testRemoveControllerSucceedsButUnregisterFails
+- testRemoveControllerWithUnregisterSuccess
 org.apache.kafka.tools.ProducerPerformanceTest:
 - testBootstrapServer
 - testClientIdOverride
@@ -437,11 +516,20 @@ org.apache.kafka.tools.ProducerPerformanceTest:
 - testGenerateRandomPayloadByRecordSize
 - testGenerateRandomPayloadException
 - testInvalidConfigPostProcessor
+- testInvalidRecordKeyRange
+- testKeyDistributionNoneByDefault
+- testKeyDistributionRandom
+- testKeyDistributionRange
+- testKeyDistributionRequiresKeyRange
+- testKeyRangeRequiresKeyDistribution
+- testMultipleProducerProperty
 - testMutuallyExclusiveGroup
 - testNoTransactionRelatedConfigs
+- testNullKeyWhenDistributionNone
 - testNumberOfCallsForSendAndClose
 - testNumberOfFailedSendAndClose
 - testNumberOfSuccessfulSendAndClose
+- testRandomSeedCustomValue
 - testReadPayloadFile
 - testReadPayloadFileWithAlternateDelimiters
 - testReadProps
@@ -482,11 +570,6 @@ org.apache.kafka.tools.ResetIntegrationTest:
 - testReprocessingFromScratchAfterResetWithoutIntermediateUserTopic
 - testResetWhenInternalTopicsAreSpecified
 - testResetWhenLongSessionTimeoutConfiguredWithForceOption
-org.apache.kafka.tools.ResetIntegrationWithSslTest:
-- testReprocessingFromScratchAfterResetWithIntermediateInternalTopic
-- testReprocessingFromScratchAfterResetWithIntermediateUserTopic
-- testReprocessingFromScratchAfterResetWithoutIntermediateUserTopic
-- testResetWhenInternalTopicsAreSpecified
 org.apache.kafka.tools.ShareConsumerPerformanceTest:
 - testBootstrapServerNotPresent
 - testClientIdOverride
@@ -504,6 +587,11 @@ org.apache.kafka.tools.ShareConsumerPerformanceTest:
 org.apache.kafka.tools.StreamsResetterTest:
 - shouldDeleteTopic
 - shouldDetermineInternalTopicBasedOnTopicName1
+- shouldFailAfterTooManyRetries
+- shouldFailIfThereAreMembersAndNotForce
+- shouldIgnoreGroupIdNotFoundException
+- shouldRemoveIfThereAreMembersAndForce
+- shouldRetryToRemoveMembersOnUnknownMemberIdExceptionAndForce
 - shouldSeekToEndOffset
 - testResetOffsetToSpecificOffsetWhenAfterEndOffset
 - testResetToDatetimeWhenPartitionIsEmptyResetsToLatestOffset
@@ -655,7 +743,9 @@ org.apache.kafka.tools.consumer.ConsoleConsumerTest:
 - shouldStopWhenOutputCheckErrorFails
 - shouldThrowTimeoutExceptionWhenTimeoutIsReached
 - shouldWorkWithoutTopicOption
-- testGroupMetadataMessageFormatter
+- testConsumerGroupMessageFormatter
+- testGroupMetadataMessageFormatterWithClassicGroupProtocol
+- testGroupMetadataMessageFormatterWithConsumerGroupProtocol
 - testOffsetsMessageFormatter
 - testTransactionLogMessageFormatter
 org.apache.kafka.tools.consumer.ConsoleShareConsumerOptionsTest:
@@ -686,6 +776,8 @@ org.apache.kafka.tools.consumer.ConsoleShareConsumerTest:
 - shouldThrowTimeoutExceptionWhenTimeoutIsReached
 - shouldUpgradeDeliveryCount
 - testRejectMessageOnError
+org.apache.kafka.tools.consumer.ConsumerGroupMessageFormatterTest:
+- testMessageFormatter
 org.apache.kafka.tools.consumer.DefaultMessageFormatterTest:
 - testDefaultMessageFormatter
 org.apache.kafka.tools.consumer.GroupMetadataMessageFormatterTest:
@@ -698,9 +790,19 @@ org.apache.kafka.tools.consumer.ShareGroupMessageFormatterTest:
 - testMessageFormatter
 org.apache.kafka.tools.consumer.TransactionLogMessageFormatterTest:
 - testMessageFormatter
-org.apache.kafka.tools.consumer.group.AuthorizerIntegrationTest:
+org.apache.kafka.tools.consumer.group.ConsumerGroupCommandAuthorizationTest:
 - testDescribeGroupCliWithGroupDescribe
+org.apache.kafka.tools.consumer.group.ConsumerGroupCommandSaslAuthenticationTest:
+- testConsumerGroupServiceWithAuthenticationFailureWithClassicGroupProtocol
+- testConsumerGroupServiceWithAuthenticationFailureWithConsumerGroupProtocol
+- testConsumerGroupServiceWithAuthenticationSuccessWithClassicGroupProtocol
+- testConsumerGroupServiceWithAuthenticationSuccessWithConsumerGroupProtocol
 org.apache.kafka.tools.consumer.group.ConsumerGroupCommandTest:
+- testConsumerGroupStatesFromInvalidString
+- testConsumerGroupStatesFromString
+- testConsumerGroupTypesFromInvalidString
+- testConsumerGroupTypesFromString
+- testListWithUnrecognizedNewConsumerOption
 - testValidateRegexCommandWithInvalidRegex
 - testValidateRegexCommandWithValidRegex
 org.apache.kafka.tools.consumer.group.ConsumerGroupServiceTest:
@@ -772,10 +874,6 @@ org.apache.kafka.tools.consumer.group.ListConsumerGroupTest:
 - testListConsumerGroupsWithoutFilters
 - testListGroupCommandClassicProtocol
 - testListGroupCommandConsumerProtocol
-- testListWithUnrecognizedNewConsumerOption
-org.apache.kafka.tools.consumer.group.ListConsumerGroupUnitTest:
-- testConsumerGroupStatesFromString
-- testConsumerGroupTypesFromString
 org.apache.kafka.tools.consumer.group.ResetConsumerGroupOffsetTest:
 - testResetOffsetsAllTopicsAllGroups
 - testResetOffsetsByDuration
@@ -805,17 +903,7 @@ org.apache.kafka.tools.consumer.group.ResetConsumerGroupOffsetTest:
 - testResetOffsetsWithPartitionNoneLeader
 - testResetOffsetsWithPartitionNotExist
 - testResetWithUnrecognizedNewConsumerOption
-org.apache.kafka.tools.consumer.group.SaslClientsWithInvalidCredentialsTest:
-- testConsumerGroupServiceWithAuthenticationFailure
-- testConsumerGroupServiceWithAuthenticationSuccess
 org.apache.kafka.tools.consumer.group.ShareGroupCommandTest:
-- testAlterShareGroupAllTopicsToDatetimeSuccess
-- testAlterShareGroupMultipleTopicsSuccess
-- testAlterShareGroupOffsetsArgsFailureWithoutResetOffsetsArgs
-- testAlterShareGroupOffsetsFailureWithNoneEmptyGroup
-- testAlterShareGroupOffsetsFailureWithoutTopic
-- testAlterShareGroupToLatestSuccess
-- testAlterShareGroupUnsubscribedTopicSuccess
 - testDeleteShareGroupOffsets
 - testDeleteShareGroupOffsetsArgsWithoutGroup
 - testDeleteShareGroupOffsetsArgsWithoutTopic
@@ -835,6 +923,7 @@ org.apache.kafka.tools.consumer.group.ShareGroupCommandTest:
 - testDescribeNonexistentGroup
 - testDescribeOffsetsOfAllExistingGroups
 - testDescribeOffsetsOfExistingGroup
+- testDescribeOffsetsOfExistingGroupWithNoOffsetInfo
 - testDescribeOffsetsOfExistingGroupWithNulls
 - testDescribeStateOfExistingGroup
 - testDescribeStatesOfAllExistingGroups
@@ -843,7 +932,18 @@ org.apache.kafka.tools.consumer.group.ShareGroupCommandTest:
 - testListShareGroupsWithStates
 - testListWithUnrecognizedOption
 - testPrintEmptyGroupState
+- testResetOffsetsAllTopicsToDatetimeSuccess
+- testResetOffsetsArgsFailureWithoutResetOffsetsArgs
 - testResetOffsetsDryRunSuccess
+- testResetOffsetsExportImportComplexPlan
+- testResetOffsetsExportImportPlan
+- testResetOffsetsFailureWithNonEmptyGroup
+- testResetOffsetsFailureWithoutTopic
+- testResetOffsetsMultipleTopicsSuccess
+- testResetOffsetsNonExistentGroupSuccess
+- testResetOffsetsToLatestSuccess
+- testResetOffsetsToOffsetSuccess
+- testResetOffsetsUnsubscribedTopicSuccess
 org.apache.kafka.tools.consumer.group.share.ShareGroupStateMessageFormatterTest:
 - testMessageFormatter
 - testShareGroupStateMessageFormatterException
@@ -887,7 +987,9 @@ org.apache.kafka.tools.reassign.ReassignPartitionsCommandTest:
 - testCancellationWithBootstrapController
 - testCancellationWithBootstrapServer
 - testDisallowReplicationFactorChange
+- testExecuteAssignmentWithOneBootstrapServerShutdownWontTimeout
 - testGenerateAssignmentWithBootstrapServer
+- testGenerateAssignmentWithOneBootstrapServerShutdownWontTimeout
 - testHighWaterMarkAfterPartitionReassignment
 - testLogDirReassignment
 - testProduceAndConsumeWithReassignmentInProgress
@@ -942,15 +1044,8 @@ org.apache.kafka.tools.streams.DeleteStreamsGroupTest:
 - testDeleteWithUnrecognizedOption
 - testDeleteWithoutGroupOption
 org.apache.kafka.tools.streams.DescribeStreamsGroupTest:
-- testDescribeMultipleStreamsGroupWithMembersAndVerboseOptions
 - testDescribeNonExistingStreamsGroup
-- testDescribeStreamsGroup
-- testDescribeStreamsGroupWithMembersAndVerboseOptions
-- testDescribeStreamsGroupWithMembersOption
-- testDescribeStreamsGroupWithShortTimeout
-- testDescribeStreamsGroupWithStateAndVerboseOptions
-- testDescribeStreamsGroupWithStateOption
-- testDescribeStreamsGroupWithVerboseOption
+- testDescribeStreamsGroups
 - testDescribeWithUnrecognizedOption
 - testDescribeWithoutGroupOption
 org.apache.kafka.tools.streams.ListStreamsGroupTest:
@@ -964,6 +1059,7 @@ org.apache.kafka.tools.streams.ResetStreamsGroupOffsetTest:
 - testResetOffsetsWithDeleteAllInternalTopics
 - testResetOffsetsWithDeleteInternalTopicsOption
 - testResetOffsetsWithDeleteSpecifiedInternalTopics
+- testResetOffsetsWithoutDryRunOrExecuteOption
 - testResetOffsetsWithoutGroupOption
 - testResetWithUnrecognizedOption
 org.apache.kafka.tools.streams.StreamsGroupCommandTest:
@@ -972,10 +1068,14 @@ org.apache.kafka.tools.streams.StreamsGroupCommandTest:
 - testDeleteStreamsGroup
 - testDescribeStreamsGroups
 - testDescribeStreamsGroupsGetOffsets
+- testDescribeStreamsGroupsWithTopologyAvailable
+- testDescribeStreamsGroupsWithUnavailableTopology
 - testExitCodeOnExecutionException
 - testExitCodeOnIllegalArguments
 - testExitCodeOnInterruptedException
 - testExitCodeOnInvalidOption
+- testGetCommittedOffsetsIncludesRepartitionTopics
+- testGetCommittedOffsetsWithMultipleSubtopologies
 - testGroupStatesFromString
 - testListStreamsGroups
 - testListStreamsGroupsWithStates
@@ -983,3 +1083,11 @@ org.apache.kafka.tools.streams.StreamsGroupCommandTest:
 - testPrintEmptyGroupState
 - testResetOffsetsWithPartitionNotExist
 - testRetrieveInternalTopics
+org.apache.kafka.tools.streams.TopologyDescriptionFormatterTest:
+- testFormatEmptyTopologyHasNoTrailingSpace
+- testFormatGlobalStore
+- testFormatMultipleGlobalStoresAreSeparatedByBlankLine
+- testFormatMultipleSubtopologiesAreIndentedConsistently
+- testFormatRendersEmptySuccessorsAndPredecessorsAsNone
+- testFormatSimpleSubtopology
+- testFormatSinkWithoutTopicAndMultipleSuccessors
