@@ -53,7 +53,7 @@ import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
 import org.apache.kafka.coordinator.transaction.TransactionLogConfig
 import org.apache.kafka.server.common.{ControllerRequestCompletionHandler, NodeToControllerChannelManager, RequestLocal}
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
-import org.apache.kafka.server.partition.{AlterPartitionListener, AlterPartitionManager, DefaultAlterPartitionManager, OngoingReassignmentState, PartitionListener, PendingShrinkIsr, SimpleAssignmentState}
+import org.apache.kafka.server.partition.{AlterPartitionListener, AlterPartitionManager, CommittedPartitionState, DefaultAlterPartitionManager, OngoingReassignmentState, PartitionListener, SimpleAssignmentState}
 import org.apache.kafka.server.purgatory.{DelayedDeleteRecords, DelayedFetch, DelayedOperationPurgatory, DelayedProduce, TopicPartitionOperationKey}
 import org.apache.kafka.server.share.fetch.DelayedShareFetchPartitionKey
 import org.apache.kafka.server.storage.log.{FetchIsolation, FetchParams, UnexpectedAppendOffsetException}
@@ -1517,7 +1517,7 @@ class PartitionTest extends AbstractPartitionTest {
 
     // Still no ISR change and no retry
     assertEquals(Set(brokerId), partition.inSyncReplicaIds)
-    assertEquals(util.Set.of(brokerId, remoteBrokerId), partition.partitionState.maximalIsr)
+    assertEquals(util.Set.of(brokerId), partition.partitionState.maximalIsr)
     assertEquals(0, alterPartitionManager.isrUpdates.size)
 
     assertEquals(0, alterPartitionListener.expands.get)
@@ -1635,7 +1635,7 @@ class PartitionTest extends AbstractPartitionTest {
 
     // Still no ISR change and it doesn't retry
     assertEquals(Set(brokerId), partition.inSyncReplicaIds)
-    assertEquals(util.Set.of(brokerId, remoteBrokerId), partition.partitionState.maximalIsr)
+    assertEquals(util.Set.of(brokerId), partition.partitionState.maximalIsr)
     assertEquals(alterPartitionManager.isrUpdates.size, 0)
     assertEquals(alterPartitionListener.expands.get, 0)
     assertEquals(alterPartitionListener.shrinks.get, 0)
@@ -2480,7 +2480,7 @@ class PartitionTest extends AbstractPartitionTest {
     alterPartitionManager.failIsrUpdate(Errors.INVALID_UPDATE_VERSION)
 
     // Ensure ISR hasn't changed
-    assertEquals(partition.partitionState.getClass, classOf[PendingShrinkIsr])
+    assertEquals(partition.partitionState.getClass, classOf[CommittedPartitionState])
     assertEquals(Set(brokerId, remoteBrokerId), partition.inSyncReplicaIds)
     assertEquals(alterPartitionManager.isrUpdates.size, 0)
     assertEquals(0L, partition.localLogOrException.highWatermark)
@@ -2501,7 +2501,7 @@ class PartitionTest extends AbstractPartitionTest {
     handleAlterIsrFailure(Errors.UNKNOWN_TOPIC_OR_PARTITION,
       (brokerId: Int, remoteBrokerId: Int, partition: Partition) => {
         assertEquals(partition.partitionState.isr, util.Set.of(brokerId))
-        assertEquals(partition.partitionState.maximalIsr, util.Set.of(brokerId, remoteBrokerId))
+        assertEquals(partition.partitionState.maximalIsr, util.Set.of(brokerId))
         assertEquals(alterPartitionManager.isrUpdates.size, 0)
       })
   }
@@ -2511,7 +2511,7 @@ class PartitionTest extends AbstractPartitionTest {
     handleAlterIsrFailure(Errors.INVALID_UPDATE_VERSION,
       (brokerId: Int, remoteBrokerId: Int, partition: Partition) => {
         assertEquals(partition.partitionState.isr, util.Set.of(brokerId))
-        assertEquals(partition.partitionState.maximalIsr, util.Set.of(brokerId, remoteBrokerId))
+        assertEquals(partition.partitionState.maximalIsr, util.Set.of(brokerId))
         assertEquals(alterPartitionManager.isrUpdates.size, 0)
       })
   }
