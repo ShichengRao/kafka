@@ -19,6 +19,7 @@ package kafka.zk.migration
 import kafka.api.LeaderAndIsr
 import kafka.controller.{LeaderIsrAndControllerEpoch, ReplicaAssignment}
 import kafka.coordinator.transaction.{ProducerIdManager, ZkProducerIdManager}
+import kafka.zk.ControllerZNode
 import org.apache.kafka.common.config.{ConfigResource, SslConfigs, TopicConfig}
 import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.metadata.{ConfigRecord, MetadataRecordType, PartitionRecord, ProducerIdsRecord, TopicRecord}
@@ -642,6 +643,42 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
       assertEquals(List(2, 3, 4), state.leaderAndIsr.isr)
       assertEquals(LeaderRecoveryState.RECOVERED, state.leaderAndIsr.leaderRecoveryState)
     }
+  }
+
+  /**
+   * A ZK controller elected after reverting to ZK mode aborts the leader election of a partition whose state has a
+   * higher controller epoch than its own, so partition states must not be written with the KRaft controller epoch.
+   */
+  @Test
+  def testPartitionStateHasZkControllerEpoch(): Unit = {
+    assertTrue(migrationState.kraftControllerEpoch() > migrationState.zkControllerEpoch() + 2)
+    migrationState = migrationClient.claimControllerLeadership(migrationState)
+
+    def registration(isr: Array[Int]): PartitionRegistration = new PartitionRegistration.Builder()
+      .setReplicas(Array(0, 1, 2))
+      .setDirectories(DirectoryId.migratingArray(3))
+      .setIsr(isr)
+      .setLeader(0)
+      .setLeaderRecoveryState(LeaderRecoveryState.RECOVERED)
+      .setLeaderEpoch(1)
+      .setPartitionEpoch(-1)
+      .build()
+    val topicPartition = new TopicPartition("test", 0)
+
+    migrationState = migrationClient.topicClient().createTopic("test", Uuid.randomUuid(),
+      Map(0 -> registration(Array(0, 1, 2))).map { case (k, v) => Integer.valueOf(k) -> v }.asJava, migrationState)
+    assertEquals(migrationState.zkControllerEpoch(), zkClient.getTopicPartitionState(topicPartition).get.controllerEpoch)
+
+    migrationState = migrationClient.topicClient().updateTopicPartitions(Map("test" ->
+      Map(0 -> registration(Array(0, 1))).map { case (k, v) => Integer.valueOf(k) -> v }.asJava).asJava, migrationState)
+    val partitionState = zkClient.getTopicPartitionState(topicPartition).get
+    assertEquals(migrationState.zkControllerEpoch(), partitionState.controllerEpoch)
+
+    // Revert to ZK mode: remove the KRaft controller registration and elect a ZK controller
+    zkClient.deletePath(ControllerZNode.path)
+    val (zkControllerEpoch, _) = zkClient.registerControllerAndIncrementControllerEpoch(0)
+    assertTrue(partitionState.controllerEpoch < zkControllerEpoch,
+      s"Partition state controller epoch ${partitionState.controllerEpoch} should be lower than $zkControllerEpoch")
   }
 
   private class CapturingTopicVisitor extends TopicVisitor {

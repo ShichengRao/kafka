@@ -160,7 +160,7 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
       val topicPartition = new TopicPartition(topicName, partitionId)
       Seq(
         createTopicPartition(topicPartition),
-        createTopicPartitionState(topicPartition, partition, state.kraftControllerEpoch())
+        createTopicPartitionState(topicPartition, partition, state.zkControllerEpoch())
       )
     }
 
@@ -250,7 +250,7 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
     val requests = topicPartitions.asScala.flatMap { case (topicName, partitionRegistrations) =>
       partitionRegistrations.asScala.flatMap { case (partitionId, partitionRegistration) =>
         val topicPartition = new TopicPartition(topicName, partitionId)
-        Seq(updateTopicPartitionState(topicPartition, partitionRegistration, state.kraftControllerEpoch()))
+        Seq(updateTopicPartitionState(topicPartition, partitionRegistration, state.zkControllerEpoch()))
       }
     }
     if (requests.isEmpty) {
@@ -297,6 +297,11 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
     CreateRequest(path, null, zkClient.defaultAcls(path), CreateMode.PERSISTENT, Some(topicPartition))
   }
 
+  /**
+   * The controller epoch is the ZK controller epoch the KRaft controller registered in /controller_epoch, rather than
+   * its KRaft epoch. A ZK controller elected after reverting to ZK mode aborts the leader election of any partition
+   * whose state has a higher controller epoch than its own.
+   */
   private def partitionStatePathAndData(
     topicPartition: TopicPartition,
     partitionRegistration: PartitionRegistration,
