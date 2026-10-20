@@ -135,7 +135,8 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
       state
     } else if (resultCodes.forall { case (_, code) => code.equals(Code.OK) }) {
       // ok
-      state.withMigrationZkVersion(migrationZkVersion)
+      catchUpPartitionStateZkVersions(util.Collections.singletonMap(topicName, partitions),
+        state.withMigrationZkVersion(migrationZkVersion))
     } else {
       // not ok
       throw new MigrationClientException(s"Failed to create or update topic $topicName. ZK operations had results $resultCodes")
@@ -237,7 +238,7 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
     val (migrationZkVersion, responses) = zkClient.retryMigrationRequestsUntilConnected(requests, state)
     val resultCodes = responses.map { response => response.path -> response.resultCode }.toMap
     if (resultCodes.forall { case (_, code) => code.equals(Code.OK) || code.equals(Code.NODEEXISTS) }) {
-      state.withMigrationZkVersion(migrationZkVersion)
+      catchUpPartitionStateZkVersions(topicPartitions, state.withMigrationZkVersion(migrationZkVersion))
     } else {
       throw new MigrationClientException(s"Failed to create partition states: $topicPartitions. ZK transaction had results $resultCodes")
     }
@@ -247,16 +248,12 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
     topicPartitions: util.Map[String, util.Map[Integer, PartitionRegistration]],
     state: ZkMigrationLeadershipState
   ): ZkMigrationLeadershipState = wrapZkException {
-    val requests = topicPartitions.asScala.flatMap { case (topicName, partitionRegistrations) =>
-      partitionRegistrations.asScala.flatMap { case (partitionId, partitionRegistration) =>
-        val topicPartition = new TopicPartition(topicName, partitionId)
-        Seq(updateTopicPartitionState(topicPartition, partitionRegistration, state.kraftControllerEpoch()))
-      }
-    }
-    if (requests.isEmpty) {
+    val registrations = partitionRegistrations(topicPartitions)
+    if (registrations.isEmpty) {
       state
     } else {
-      val (migrationZkVersion, responses) = zkClient.retryMigrationRequestsUntilConnected(requests.toSeq, state)
+      val requests = partitionStateWriteRequests(registrations, state, minWritesPerPartition = 1)
+      val (migrationZkVersion, responses) = zkClient.retryMigrationRequestsUntilConnected(requests, state)
       val resultCodes = responses.map { response => response.path -> response.resultCode }.toMap
       if (resultCodes.forall { case (_, code) => code.equals(Code.OK) }) {
         state.withMigrationZkVersion(migrationZkVersion)
@@ -264,6 +261,93 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
         throw new MigrationClientException(s"Failed to update partition states: $topicPartitions. ZK transaction had results $resultCodes")
       }
     }
+  }
+
+  /**
+   * Catch up the versions of the given partition state znodes with their KRaft partition epochs. Newly created
+   * znodes start at version 0, even if the partition has already changed in KRaft.
+   */
+  private def catchUpPartitionStateZkVersions(
+    topicPartitions: util.Map[String, util.Map[Integer, PartitionRegistration]],
+    state: ZkMigrationLeadershipState
+  ): ZkMigrationLeadershipState = {
+    val registrations = partitionRegistrations(topicPartitions).filter { case (_, registration) =>
+      registration.partitionEpoch > 0
+    }
+    if (registrations.isEmpty) {
+      state
+    } else {
+      val requests = partitionStateWriteRequests(registrations, state, minWritesPerPartition = 0)
+      if (requests.isEmpty) {
+        state
+      } else {
+        val (migrationZkVersion, responses) = zkClient.retryMigrationRequestsUntilConnected(requests, state)
+        val resultCodes = responses.map { response => response.path -> response.resultCode }.toMap
+        if (resultCodes.forall { case (_, code) => code.equals(Code.OK) }) {
+          state.withMigrationZkVersion(migrationZkVersion)
+        } else {
+          throw new MigrationClientException(s"Failed to update partition state versions: $topicPartitions. " +
+            s"ZK transaction had results $resultCodes")
+        }
+      }
+    }
+  }
+
+  private def partitionRegistrations(
+    topicPartitions: util.Map[String, util.Map[Integer, PartitionRegistration]]
+  ): Seq[(TopicPartition, PartitionRegistration)] = {
+    topicPartitions.asScala.toSeq.flatMap { case (topicName, registrations) =>
+      registrations.asScala.toSeq.map { case (partitionId, registration) =>
+        new TopicPartition(topicName, partitionId) -> registration
+      }
+    }
+  }
+
+  /**
+   * Build the requests that write the given partition states to ZK. The ZK controller uses the znode version as the
+   * partition epoch, while ZK brokers are sent the KRaft partition epoch during the migration. Since one write can
+   * cover several KRaft partition changes, each partition is written as many times as needed for its znode version
+   * to reach the KRaft partition epoch, and at least `minWritesPerPartition` times. Otherwise, after a rollback to
+   * ZK mode, brokers would reject the LeaderAndIsr requests of the ZK controller as stale.
+   */
+  private def partitionStateWriteRequests(
+    registrations: Seq[(TopicPartition, PartitionRegistration)],
+    state: ZkMigrationLeadershipState,
+    minWritesPerPartition: Int
+  ): Seq[SetDataRequest] = {
+    val zkVersions = partitionStateZkVersions(registrations.map(_._1))
+    val partitionWrites = registrations.map { case (topicPartition, registration) =>
+      // A missing znode gets the usual writes, which fail just as they would have without catching up
+      val behindBy = zkVersions.get(topicPartition).map(registration.partitionEpoch - _).getOrElse(0)
+      (topicPartition, registration, math.max(minWritesPerPartition, behindBy))
+    }
+
+    val catchingUp = partitionWrites.filter { case (_, _, writes) => writes > minWritesPerPartition }
+    if (catchingUp.nonEmpty) {
+      val examples = catchingUp.take(10).map { case (topicPartition, registration, _) =>
+        s"$topicPartition (version ${zkVersions(topicPartition)}, partition epoch ${registration.partitionEpoch})"
+      }
+      info(s"Writing ${catchingUp.size} partition state znode(s) extra times so that their versions catch up with " +
+        s"the KRaft partition epoch: ${examples.mkString(", ")}${if (catchingUp.size > 10) ", ..." else ""}")
+    }
+
+    partitionWrites.flatMap { case (topicPartition, registration, writes) =>
+      // The requests for one partition must differ from each other, so the context includes the write number.
+      // Otherwise, retryMigrationRequestsUntilConnected could not tell which request is the last one in the batch.
+      (1 to writes).map { write =>
+        updateTopicPartitionState(topicPartition, registration, state.kraftControllerEpoch(), Some((topicPartition, write)))
+      }
+    }
+  }
+
+  private def partitionStateZkVersions(topicPartitions: Seq[TopicPartition]): Map[TopicPartition, Int] = {
+    zkClient.getTopicPartitionStatesRaw(topicPartitions).flatMap { response =>
+      if (response.resultCode == Code.OK) {
+        Some(response.ctx.get.asInstanceOf[TopicPartition] -> response.stat.getVersion)
+      } else {
+        None
+      }
+    }.toMap
   }
 
   override def deleteTopicPartitions(
@@ -324,10 +408,11 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
   private def updateTopicPartitionState(
     topicPartition: TopicPartition,
     partitionRegistration: PartitionRegistration,
-    controllerEpoch: Int
+    controllerEpoch: Int,
+    ctx: Option[Any]
   ): SetDataRequest = {
     val (path, data) = partitionStatePathAndData(topicPartition, partitionRegistration, controllerEpoch)
-    SetDataRequest(path, data, ZkVersion.MatchAnyVersion, Some(topicPartition))
+    SetDataRequest(path, data, ZkVersion.MatchAnyVersion, ctx)
   }
 
   override def readPendingTopicDeletions(): util.Set[String] = {
