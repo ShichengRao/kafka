@@ -45,6 +45,7 @@ import org.apache.kafka.image.loader.SnapshotManifest;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
 import org.apache.kafka.metadata.BrokerRegistrationInControlledShutdownChange;
 import org.apache.kafka.metadata.KafkaConfigSchema;
+import org.apache.kafka.metadata.PartitionRegistration;
 import org.apache.kafka.metadata.RecordTestUtils;
 import org.apache.kafka.raft.LeaderAndEpoch;
 import org.apache.kafka.raft.OffsetAndEpoch;
@@ -600,25 +601,30 @@ public class KRaftMigrationDriverTest {
         ) throws Exception;
     }
 
+    /**
+     * A topic migration client for which ZK contains the topics of IMAGE1.
+     */
+    static class Image1TopicMigrationClient extends CapturingTopicMigrationClient {
+        @Override
+        public void iterateTopics(EnumSet<TopicVisitorInterest> interests, TopicVisitor visitor) {
+            IMAGE1.topicsByName().forEach((topicName, topicImage) -> {
+                Map<Integer, List<Integer>> assignment = new HashMap<>();
+                topicImage.partitions().forEach((partitionId, partitionRegistration) ->
+                    assignment.put(partitionId, IntStream.of(partitionRegistration.replicas).boxed().collect(Collectors.toList()))
+                );
+                visitor.visitTopic(topicName, topicImage.id(), assignment);
+
+                topicImage.partitions().forEach((partitionId, partitionRegistration) ->
+                    visitor.visitPartition(new TopicIdPartition(topicImage.id(), new TopicPartition(topicName, partitionId)), partitionRegistration)
+                );
+            });
+        }
+    }
+
     public void setupTopicDualWrite(TopicDualWriteVerifier verifier) throws Exception {
         CountingMetadataPropagator metadataPropagator = new CountingMetadataPropagator();
 
-        CapturingTopicMigrationClient topicClient = new CapturingTopicMigrationClient() {
-            @Override
-            public void iterateTopics(EnumSet<TopicVisitorInterest> interests, TopicVisitor visitor) {
-                IMAGE1.topicsByName().forEach((topicName, topicImage) -> {
-                    Map<Integer, List<Integer>> assignment = new HashMap<>();
-                    topicImage.partitions().forEach((partitionId, partitionRegistration) ->
-                        assignment.put(partitionId, IntStream.of(partitionRegistration.replicas).boxed().collect(Collectors.toList()))
-                    );
-                    visitor.visitTopic(topicName, topicImage.id(), assignment);
-
-                    topicImage.partitions().forEach((partitionId, partitionRegistration) ->
-                        visitor.visitPartition(new TopicIdPartition(topicImage.id(), new TopicPartition(topicName, partitionId)), partitionRegistration)
-                    );
-                });
-            }
-        };
+        CapturingTopicMigrationClient topicClient = new Image1TopicMigrationClient();
         CapturingConfigMigrationClient configClient = new CapturingConfigMigrationClient();
         CapturingMigrationClient migrationClient = CapturingMigrationClient.newBuilder()
             .setBrokersInZk(0, 1, 2, 3, 4, 5)
@@ -741,6 +747,141 @@ public class KRaftMigrationDriverTest {
             assertTrue(topicClient.updatedTopicPartitions.get("bar").contains(0));
             assertEquals(0, configClient.deletedResources.size());
         });
+    }
+
+    /**
+     * Make the driver the active controller, with the topics of IMAGE1, and wait until it is
+     * dual-writing. Returns the metadata image the driver has at that point.
+     */
+    private MetadataImage startDualWrite(KRaftMigrationDriver driver, LeaderAndEpoch leader) throws Exception {
+        MetadataImage image = new MetadataImage(
+            MetadataProvenance.EMPTY,
+            FeaturesImage.EMPTY,
+            ClusterImage.EMPTY,
+            IMAGE1,
+            ConfigurationsImage.EMPTY,
+            ClientQuotasImage.EMPTY,
+            ProducerIdsImage.EMPTY,
+            AclsImage.EMPTY,
+            ScramImage.EMPTY,
+            DelegationTokenImage.EMPTY);
+        MetadataDelta delta = new MetadataDelta(image);
+
+        startAndWaitForRecoveringMigrationStateFromZK(driver);
+        setupDeltaForMigration(delta, true);
+        delta.replay(ZkMigrationState.PRE_MIGRATION.toRecord().message());
+        for (int brokerId = 0; brokerId <= 5; brokerId++) {
+            delta.replay(zkBrokerRecord(brokerId));
+        }
+        MetadataProvenance provenance = new MetadataProvenance(100, 1, 1);
+        image = delta.apply(provenance);
+
+        driver.onControllerChange(leader);
+        driver.onMetadataUpdate(delta, image, logDeltaManifestBuilder(provenance, leader).build());
+        TestUtils.waitForCondition(() -> driver.migrationState().get(1, TimeUnit.MINUTES).equals(MigrationDriverState.DUAL_WRITE),
+            "Waiting for KRaftMigrationDriver to enter DUAL_WRITE state");
+        return image;
+    }
+
+    @Test
+    public void testFailedDualWriteIsRetried() throws Exception {
+        AtomicBoolean failNextPartitionUpdate = new AtomicBoolean(false);
+        CapturingTopicMigrationClient topicClient = new Image1TopicMigrationClient() {
+            @Override
+            public ZkMigrationLeadershipState updateTopicPartitions(
+                Map<String, Map<Integer, PartitionRegistration>> topicPartitions,
+                ZkMigrationLeadershipState state
+            ) {
+                if (failNextPartitionUpdate.getAndSet(false)) {
+                    throw new MigrationClientException("Some kind of ZK error!");
+                }
+                return super.updateTopicPartitions(topicPartitions, state);
+            }
+        };
+        CapturingMigrationClient migrationClient = CapturingMigrationClient.newBuilder()
+            .setBrokersInZk(0, 1, 2, 3, 4, 5)
+            .setTopicMigrationClient(topicClient)
+            .build();
+        KRaftMigrationDriver.Builder builder = defaultTestBuilder()
+            .setZkMigrationClient(migrationClient)
+            .setPropagator(new CountingMetadataPropagator());
+        try (KRaftMigrationDriver driver = builder.build()) {
+            LeaderAndEpoch leader = new LeaderAndEpoch(OptionalInt.of(3000), 1);
+            MetadataImage image = startDualWrite(driver, leader);
+
+            // The dual-write of this delta fails part way through, after deleting and creating topics
+            failNextPartitionUpdate.set(true);
+            MetadataProvenance provenance = new MetadataProvenance(200, 1, 1);
+            MetadataDelta delta = new MetadataDelta(image);
+            RecordTestUtils.replayAll(delta, DELTA1_RECORDS);
+            image = delta.apply(provenance);
+            driver.onMetadataUpdate(delta, image, logDeltaManifestBuilder(provenance, leader).build());
+
+            // The full image is written to ZK without waiting for another metadata change
+            TestUtils.waitForCondition(() -> {
+                driver.migrationState().get(1, TimeUnit.MINUTES);
+                return migrationClient.getOrCreateMigrationRecoveryState(null).kraftMetadataOffset() == 200;
+            }, "Waiting for the failed dual-write to be retried");
+            assertTrue(topicClient.updatedTopicPartitions.get("bar").contains(0));
+            assertTrue(topicClient.createdTopics.contains("baz"));
+            assertTrue(topicClient.deletedTopics.contains("foo"));
+        }
+    }
+
+    @Test
+    public void testAwaitDualWritesFlushed() throws Exception {
+        AtomicBoolean failNextPartitionUpdate = new AtomicBoolean(false);
+        CapturingTopicMigrationClient topicClient = new Image1TopicMigrationClient() {
+            @Override
+            public ZkMigrationLeadershipState updateTopicPartitions(
+                Map<String, Map<Integer, PartitionRegistration>> topicPartitions,
+                ZkMigrationLeadershipState state
+            ) {
+                if (failNextPartitionUpdate.getAndSet(false)) {
+                    throw new MigrationClientException("Some kind of ZK error!");
+                }
+                return super.updateTopicPartitions(topicPartitions, state);
+            }
+        };
+        CapturingMigrationClient migrationClient = CapturingMigrationClient.newBuilder()
+            .setBrokersInZk(0, 1, 2, 3, 4, 5)
+            .setTopicMigrationClient(topicClient)
+            .build();
+        KRaftMigrationDriver.Builder builder = defaultTestBuilder()
+            .setZkMigrationClient(migrationClient)
+            .setPropagator(new CountingMetadataPropagator());
+        try (KRaftMigrationDriver driver = builder.build()) {
+            // There is nothing to flush before this node is the active controller
+            startAndWaitForRecoveringMigrationStateFromZK(driver);
+            driver.awaitDualWritesFlushed().get(1, TimeUnit.MINUTES);
+
+            LeaderAndEpoch leader = new LeaderAndEpoch(OptionalInt.of(3000), 1);
+            MetadataImage image = startDualWrite(driver, leader);
+            metrics.setLastCommittedRecordOffset(100);
+            driver.awaitDualWritesFlushed().get(1, TimeUnit.MINUTES);
+
+            // A committed change that has not been written to ZK yet keeps the flush pending
+            metrics.setLastCommittedRecordOffset(200);
+            CompletableFuture<Void> flushed = driver.awaitDualWritesFlushed();
+            driver.migrationState().get(1, TimeUnit.MINUTES);
+            assertFalse(flushed.isDone());
+
+            // The first dual-write of the change fails, so the flush completes once it has been retried
+            failNextPartitionUpdate.set(true);
+            MetadataProvenance provenance = new MetadataProvenance(200, 1, 1);
+            MetadataDelta delta = new MetadataDelta(image);
+            RecordTestUtils.replayAll(delta, DELTA1_RECORDS);
+            image = delta.apply(provenance);
+            driver.onMetadataUpdate(delta, image, logDeltaManifestBuilder(provenance, leader).build());
+            flushed.get(1, TimeUnit.MINUTES);
+            assertEquals(200, migrationClient.getOrCreateMigrationRecoveryState(null).kraftMetadataOffset());
+            assertTrue(topicClient.updatedTopicPartitions.get("bar").contains(0));
+
+            // Once this node resigns, another controller takes over the dual-writes
+            metrics.setLastCommittedRecordOffset(300);
+            driver.onControllerChange(new LeaderAndEpoch(OptionalInt.of(3001), 2));
+            driver.awaitDualWritesFlushed().get(1, TimeUnit.MINUTES);
+        }
     }
 
     @Test

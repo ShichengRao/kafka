@@ -56,7 +56,7 @@ import org.apache.kafka.server.util.{Deadline, FutureUtils}
 import java.util
 import java.util.{Optional, OptionalLong}
 import java.util.concurrent.locks.ReentrantLock
-import java.util.concurrent.{CompletableFuture, TimeUnit}
+import java.util.concurrent.{CompletableFuture, TimeUnit, TimeoutException}
 import scala.compat.java8.OptionConverters._
 import scala.jdk.CollectionConverters._
 
@@ -66,15 +66,31 @@ case class ControllerMigrationSupport(
   migrationDriver: KRaftMigrationDriver,
   brokersRpcClient: LegacyPropagator
 ) {
+  /**
+   * Wait for the metadata committed so far to be written to ZK, so that the changes this controller acknowledged are
+   * not lost if no other controller takes over the dual-writes.
+   */
+  def flushDualWrites(timeoutMs: Long, logging: Logging): Unit = {
+    try {
+      migrationDriver.awaitDualWritesFlushed().get(timeoutMs, TimeUnit.MILLISECONDS)
+    } catch {
+      case _: TimeoutException =>
+        logging.warn(s"Timed out after $timeoutMs ms waiting for the committed metadata to be written to ZK.")
+      case e: Throwable =>
+        logging.warn("Failed to wait for the committed metadata to be written to ZK.", e)
+    }
+  }
+
   def shutdown(logging: Logging): Unit = {
-    if (zkClient != null) {
-      CoreUtils.swallow(zkClient.close(), logging)
+    // Close the migration driver first, since it uses the ZK client and the RPC client while processing its events
+    if (migrationDriver != null) {
+      CoreUtils.swallow(migrationDriver.close(), logging)
     }
     if (brokersRpcClient != null) {
       CoreUtils.swallow(brokersRpcClient.shutdown(), logging)
     }
-    if (migrationDriver != null) {
-      CoreUtils.swallow(migrationDriver.close(), logging)
+    if (zkClient != null) {
+      CoreUtils.swallow(zkClient.close(), logging)
     }
   }
 }
@@ -474,6 +490,9 @@ class ControllerServer(
     if (!maybeChangeStatus(STARTED, SHUTTING_DOWN)) return
     try {
       info("shutting down")
+      // Write the committed metadata to ZK before resigning, since the dual-writes of this controller are dropped
+      // once it is no longer the leader.
+      migrationSupport.foreach(_.flushDualWrites(config.zkSessionTimeoutMs, this))
       // Ensure that we're not the Raft leader prior to shutting down our socket server, for a
       // smoother transition.
       sharedServer.ensureNotRaftLeader()
