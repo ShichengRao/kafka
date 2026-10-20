@@ -41,8 +41,10 @@ import org.apache.kafka.server.util.FutureUtils;
 
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -115,6 +117,13 @@ public class KRaftMigrationDriver implements MetadataPublisher {
     private volatile MetadataImage image;
     private volatile boolean firstPublish;
 
+    // Set when a dual-write fails, so that the full metadata image is written to ZK on the next metadata change or poll.
+    // Only accessed by the migration driver thread.
+    private boolean dualWriteNeedsFullSync;
+
+    // The flushes waiting for the committed metadata to be written to ZK. Only accessed by the migration driver thread.
+    private final List<PendingFlush> pendingFlushes = new ArrayList<>();
+
     // This is updated by the MetadataPublisher thread. When processing events in the migration driver thread,
     // we should check if a newer leader has been seen by examining this variable.
     private volatile LeaderAndEpoch curLeaderAndEpoch;
@@ -161,6 +170,19 @@ public class KRaftMigrationDriver implements MetadataPublisher {
 
     public void start() {
         eventQueue.prepend(new PollEvent());
+    }
+
+    /**
+     * Wait until the metadata committed so far has been written to ZK. A controller calls this before it resigns
+     * during shutdown, since another controller may never take over the dual-writes, for instance when the KRaft
+     * controllers are removed to revert to ZK mode.
+     *
+     * @return A future that completes once ZK has caught up, or right away if this node is not doing dual-writes.
+     */
+    public CompletableFuture<Void> awaitDualWritesFlushed() {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        eventQueue.append(new FlushDualWritesEvent(controllerMetrics.lastCommittedRecordOffset(), future));
+        return future;
     }
 
     // Visible for testing
@@ -343,6 +365,7 @@ public class KRaftMigrationDriver implements MetadataPublisher {
         }
 
         migrationState = newState;
+        maybeCompleteFlushes();
     }
 
     private void wakeup() {
@@ -383,6 +406,9 @@ public class KRaftMigrationDriver implements MetadataPublisher {
         eventQueue.beginShutdown("KRaftMigrationDriver#shutdown");
         log.debug("Shutting down KRaftMigrationDriver");
         eventQueue.close();
+        pendingFlushes.forEach(flush ->
+            flush.future.completeExceptionally(new RejectedExecutionException("The migration driver is closed")));
+        pendingFlushes.clear();
     }
 
     /**
@@ -459,6 +485,8 @@ public class KRaftMigrationDriver implements MetadataPublisher {
         public void run() throws Exception {
             // We can either be the active controller or just resigned from being the controller.
             boolean isActive = leaderAndEpoch.isLeader(KRaftMigrationDriver.this.nodeId);
+            // A new active driver syncs the full image to ZK before dual-writing again
+            dualWriteNeedsFullSync = false;
 
             if (!isActive) {
                 applyMigrationOperation("Became inactive migration driver", state ->
@@ -566,10 +594,16 @@ public class KRaftMigrationDriver implements MetadataPublisher {
 
             Map<String, Integer> dualWriteCounts = new TreeMap<>();
             long startTime = time.nanoseconds();
-            if (isSnapshot) {
+            // After a failed dual-write, ZK may be missing changes from earlier deltas, so write the full image instead
+            boolean fullSync = isSnapshot || dualWriteNeedsFullSync;
+            if (fullSync) {
+                if (!isSnapshot) {
+                    log.info("Writing the full metadata image {} to ZK since a previous dual-write failed.", provenance);
+                }
                 zkMetadataWriter.handleSnapshot(image, countingOperationConsumer(
                     dualWriteCounts, KRaftMigrationDriver.this::applyMigrationOperation));
                 controllerMetrics.updateZkWriteSnapshotTimeMs(NANOSECONDS.toMillis(time.nanoseconds() - startTime));
+                dualWriteNeedsFullSync = false;
             } else {
                 if (zkMetadataWriter.handleDelta(prevImage, image, delta, countingOperationConsumer(
                       dualWriteCounts, KRaftMigrationDriver.this::applyMigrationOperation))) {
@@ -592,7 +626,7 @@ public class KRaftMigrationDriver implements MetadataPublisher {
             applyMigrationOperation("Updated ZK migration state after " + metadataType,
                 state -> zkMigrationClient.setMigrationRecoveryState(zkStateAfterDualWrite));
 
-            if (isSnapshot) {
+            if (fullSync) {
                 // When we load a snapshot, need to send full metadata updates to the brokers
                 log.debug("Sending full metadata RPCs to brokers for snapshot.");
                 propagator.sendRPCsToBrokersFromMetadataImage(image, migrationLeadershipState.zkControllerEpoch());
@@ -606,12 +640,20 @@ public class KRaftMigrationDriver implements MetadataPublisher {
                 }
             }
 
+            maybeCompleteFlushes();
             completionHandler.accept(null);
         }
 
         @Override
         public void handleException(Throwable e) {
             completionHandler.accept(e);
+            if (!(e instanceof RejectedExecutionException) && migrationState.allowDualWrite()) {
+                // Some of the changes in this delta may not have been written to ZK, and the next delta will not
+                // include them. Retry by writing the full image instead of waiting for a snapshot or a new leader.
+                dualWriteNeedsFullSync = true;
+                pollTimeSupplier.reset();
+                wakeup();
+            }
             super.handleException(e);
         }
 
@@ -909,6 +951,57 @@ public class KRaftMigrationDriver implements MetadataPublisher {
         }
     }
 
+    /**
+     * Complete the pending flushes for which all the metadata committed at the time of the flush has been written to
+     * ZK, or for which this node no longer needs to write to ZK.
+     */
+    private void maybeCompleteFlushes() {
+        if (pendingFlushes.isEmpty()) {
+            return;
+        }
+        LeaderAndEpoch leaderAndEpoch = curLeaderAndEpoch;
+        boolean writesToZk = leaderAndEpoch != null && leaderAndEpoch.isLeader(nodeId) &&
+            migrationLeadershipState.initialZkMigrationComplete();
+        boolean caughtUp = migrationState == MigrationDriverState.DUAL_WRITE && !dualWriteNeedsFullSync;
+        pendingFlushes.removeIf(flush -> {
+            if (!writesToZk || (caughtUp && migrationLeadershipState.kraftMetadataOffset() >= flush.committedOffset)) {
+                flush.future.complete(null);
+                return true;
+            }
+            return false;
+        });
+    }
+
+    private static class PendingFlush {
+        private final long committedOffset;
+        private final CompletableFuture<Void> future;
+
+        PendingFlush(long committedOffset, CompletableFuture<Void> future) {
+            this.committedOffset = committedOffset;
+            this.future = future;
+        }
+    }
+
+    class FlushDualWritesEvent extends MigrationEvent {
+        private final PendingFlush flush;
+
+        FlushDualWritesEvent(long committedOffset, CompletableFuture<Void> future) {
+            this.flush = new PendingFlush(committedOffset, future);
+        }
+
+        @Override
+        public void run() throws Exception {
+            pendingFlushes.add(flush);
+            maybeCompleteFlushes();
+        }
+
+        @Override
+        public void handleException(Throwable e) {
+            flush.future.completeExceptionally(e);
+            super.handleException(e);
+        }
+    }
+
     class PollEvent extends MigrationEvent {
 
         @Override
@@ -941,8 +1034,11 @@ public class KRaftMigrationDriver implements MetadataPublisher {
                     eventQueue.append(new SendRPCsToBrokersEvent(eventLeaderAndEpoch));
                     break;
                 case DUAL_WRITE:
-                    // Nothing to do in the PollEvent. If there's metadata change, we use
-                    // MetadataChange event to drive the writes to Zookeeper.
+                    // If there's metadata change, we use MetadataChange event to drive the writes to Zookeeper.
+                    // Otherwise, we only need to retry a failed dual-write, by writing the full image.
+                    if (dualWriteNeedsFullSync) {
+                        enqueueMetadataChangeEvent(new MetadataDelta(image), image, image.provenance(), false, NO_OP_HANDLER);
+                    }
                     break;
             }
 
