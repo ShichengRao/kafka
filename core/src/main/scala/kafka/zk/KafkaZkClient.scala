@@ -1278,7 +1278,7 @@ class KafkaZkClient private[zk] (
   }
 
 
-  private def getControllerRegistration: Option[ZKControllerRegistration] = {
+  private[zk] def getControllerRegistration: Option[ZKControllerRegistration] = {
     val getDataRequest = GetDataRequest(ControllerZNode.path)
     val getDataResponse = retryRequestUntilConnected(getDataRequest)
     getDataResponse.resultCode match {

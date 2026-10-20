@@ -140,6 +140,11 @@ class ZkMigrationClient(
     }
   }
 
+  override def isKRaftControllerRegistered: Boolean = wrapZkException {
+    // ZK brokers register a KRaft controller epoch of -1
+    zkClient.getControllerRegistration.exists(_.kraftEpoch.exists(_ >= 0))
+  }
+
   def migrateTopics(
     recordConsumer: Consumer[util.List[ApiMessageAndVersion]],
     brokerIdConsumer: Consumer[Integer]

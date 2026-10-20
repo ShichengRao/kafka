@@ -40,6 +40,7 @@ import org.apache.kafka.image.MetadataImage;
 import org.apache.kafka.image.MetadataProvenance;
 import org.apache.kafka.image.ProducerIdsImage;
 import org.apache.kafka.image.ScramImage;
+import org.apache.kafka.image.TopicsImage;
 import org.apache.kafka.image.loader.LogDeltaManifest;
 import org.apache.kafka.image.loader.SnapshotManifest;
 import org.apache.kafka.metadata.BrokerRegistrationFencingChange;
@@ -741,6 +742,146 @@ public class KRaftMigrationDriverTest {
             assertTrue(topicClient.updatedTopicPartitions.get("bar").contains(0));
             assertEquals(0, configClient.deletedResources.size());
         });
+    }
+
+    /**
+     * A topic migration client for which ZK contains the topics of IMAGE1.
+     */
+    private static CapturingTopicMigrationClient topicClientWithImage1InZk() {
+        return new CapturingTopicMigrationClient() {
+            @Override
+            public void iterateTopics(EnumSet<TopicVisitorInterest> interests, TopicVisitor visitor) {
+                IMAGE1.topicsByName().forEach((topicName, topicImage) -> {
+                    Map<Integer, List<Integer>> assignment = new HashMap<>();
+                    topicImage.partitions().forEach((partitionId, partitionRegistration) ->
+                        assignment.put(partitionId, IntStream.of(partitionRegistration.replicas).boxed().collect(Collectors.toList()))
+                    );
+                    visitor.visitTopic(topicName, topicImage.id(), assignment);
+                    topicImage.partitions().forEach((partitionId, partitionRegistration) ->
+                        visitor.visitPartition(new TopicIdPartition(topicImage.id(), new TopicPartition(topicName, partitionId)), partitionRegistration)
+                    );
+                });
+            }
+        };
+    }
+
+    /**
+     * Publish an image with the given topics, the given ZK migration state, and ZK brokers 0 to 5.
+     */
+    private MetadataImage publishImage(
+        KRaftMigrationDriver driver,
+        LeaderAndEpoch leader,
+        long offset,
+        TopicsImage topics,
+        ZkMigrationState zkMigrationState
+    ) {
+        MetadataImage image = new MetadataImage(
+            MetadataProvenance.EMPTY,
+            FeaturesImage.EMPTY,
+            ClusterImage.EMPTY,
+            topics,
+            ConfigurationsImage.EMPTY,
+            ClientQuotasImage.EMPTY,
+            ProducerIdsImage.EMPTY,
+            AclsImage.EMPTY,
+            ScramImage.EMPTY,
+            DelegationTokenImage.EMPTY);
+        MetadataDelta delta = new MetadataDelta(image);
+        setupDeltaForMigration(delta, true);
+        delta.replay(zkMigrationState.toRecord().message());
+        for (int brokerId = 0; brokerId <= 5; brokerId++) {
+            delta.replay(zkBrokerRecord(brokerId));
+        }
+        MetadataProvenance provenance = new MetadataProvenance(offset, 1, 1);
+        image = delta.apply(provenance);
+        driver.onMetadataUpdate(delta, image, logDeltaManifestBuilder(provenance, leader).build());
+        return image;
+    }
+
+    @Test
+    public void testMigrateAgainAfterRevertedMigration() throws Exception {
+        CapturingTopicMigrationClient topicClient = topicClientWithImage1InZk();
+        AtomicInteger readAllMetadataCalls = new AtomicInteger(0);
+        CapturingMigrationClient migrationClient = new CapturingMigrationClient(
+                new HashSet<>(Arrays.asList(0, 1, 2, 3, 4, 5)),
+                topicClient,
+                new CapturingConfigMigrationClient(),
+                new CapturingAclMigrationClient(),
+                new CapturingDelegationTokenMigrationClient(),
+                CapturingMigrationClient.EMPTY_BATCH_SUPPLIER) {
+            @Override
+            public void readAllMetadata(Consumer<List<ApiMessageAndVersion>> batchConsumer, Consumer<Integer> brokerIdConsumer) {
+                readAllMetadataCalls.incrementAndGet();
+                super.readAllMetadata(batchConsumer, brokerIdConsumer);
+            }
+        };
+        // A migration was reverted to ZK mode: /migration was left behind and a ZK broker is the controller again
+        migrationClient.setMigrationRecoveryState(ZkMigrationLeadershipState.EMPTY.withKRaftMetadataOffsetAndEpoch(40, 1));
+        migrationClient.kraftControllerRegistered = false;
+
+        KRaftMigrationDriver.Builder builder = defaultTestBuilder()
+            .setZkMigrationClient(migrationClient)
+            .setPropagator(new CountingMetadataPropagator());
+        try (KRaftMigrationDriver driver = builder.build()) {
+            startAndWaitForRecoveringMigrationStateFromZK(driver);
+            LeaderAndEpoch leader = new LeaderAndEpoch(OptionalInt.of(3000), 1);
+            driver.onControllerChange(leader);
+            // The new KRaft controllers have no topics, since they have not migrated the metadata
+            publishImage(driver, leader, 50, TopicsImage.EMPTY, ZkMigrationState.PRE_MIGRATION);
+
+            // The metadata is migrated from ZK again, rather than writing the empty KRaft metadata to ZK
+            TestUtils.waitForCondition(() -> readAllMetadataCalls.get() == 1, "Waiting for the metadata to be migrated");
+            publishImage(driver, leader, 150, IMAGE1, ZkMigrationState.MIGRATION);
+            TestUtils.waitForCondition(() -> driver.migrationState().get(1, TimeUnit.MINUTES).equals(MigrationDriverState.DUAL_WRITE),
+                "Waiting for KRaftMigrationDriver to enter DUAL_WRITE state");
+            assertEquals(Collections.emptyList(), topicClient.deletedTopics);
+        }
+    }
+
+    @Test
+    public void testDoNotWriteKRaftMetadataOfRevertedMigration() throws Exception {
+        CapturingTopicMigrationClient topicClient = topicClientWithImage1InZk();
+        AtomicInteger controllerChecks = new AtomicInteger(0);
+        AtomicInteger controllerClaims = new AtomicInteger(0);
+        CapturingMigrationClient migrationClient = new CapturingMigrationClient(
+                new HashSet<>(Arrays.asList(0, 1, 2, 3, 4, 5)),
+                topicClient,
+                new CapturingConfigMigrationClient(),
+                new CapturingAclMigrationClient(),
+                new CapturingDelegationTokenMigrationClient(),
+                CapturingMigrationClient.EMPTY_BATCH_SUPPLIER) {
+            @Override
+            public boolean isKRaftControllerRegistered() {
+                controllerChecks.incrementAndGet();
+                return super.isKRaftControllerRegistered();
+            }
+
+            @Override
+            public ZkMigrationLeadershipState claimControllerLeadership(ZkMigrationLeadershipState state) {
+                controllerClaims.incrementAndGet();
+                return super.claimControllerLeadership(state);
+            }
+        };
+        // A migration was reverted to ZK mode, but these KRaft controllers kept the metadata from before the revert
+        migrationClient.setMigrationRecoveryState(ZkMigrationLeadershipState.EMPTY.withKRaftMetadataOffsetAndEpoch(40, 1));
+        migrationClient.kraftControllerRegistered = false;
+
+        KRaftMigrationDriver.Builder builder = defaultTestBuilder()
+            .setZkMigrationClient(migrationClient)
+            .setPropagator(new CountingMetadataPropagator());
+        try (KRaftMigrationDriver driver = builder.build()) {
+            startAndWaitForRecoveringMigrationStateFromZK(driver);
+            LeaderAndEpoch leader = new LeaderAndEpoch(OptionalInt.of(3000), 1);
+            driver.onControllerChange(leader);
+            publishImage(driver, leader, 50, TopicsImage.EMPTY, ZkMigrationState.MIGRATION);
+
+            // The driver becomes inactive instead of claiming the controller leadership and writing to ZK
+            TestUtils.waitForCondition(() -> controllerChecks.get() > 0 &&
+                    driver.migrationState().get(1, TimeUnit.MINUTES).equals(MigrationDriverState.INACTIVE),
+                "Waiting for KRaftMigrationDriver to enter INACTIVE state");
+            assertEquals(0, controllerClaims.get());
+            assertEquals(Collections.emptyList(), topicClient.deletedTopics);
+        }
     }
 
     @Test

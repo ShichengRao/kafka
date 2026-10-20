@@ -19,6 +19,7 @@ package kafka.zk.migration
 import kafka.api.LeaderAndIsr
 import kafka.controller.{LeaderIsrAndControllerEpoch, ReplicaAssignment}
 import kafka.coordinator.transaction.{ProducerIdManager, ZkProducerIdManager}
+import kafka.zk.ControllerZNode
 import org.apache.kafka.common.config.{ConfigResource, SslConfigs, TopicConfig}
 import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.metadata.{ConfigRecord, MetadataRecordType, PartitionRecord, ProducerIdsRecord, TopicRecord}
@@ -30,7 +31,7 @@ import org.apache.kafka.metadata.{LeaderRecoveryState, PartitionRegistration}
 import org.apache.kafka.server.config.ReplicationConfigs
 import org.apache.kafka.server.common.ApiMessageAndVersion
 import org.apache.kafka.server.config.ConfigType
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows, assertTrue, fail}
+import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertThrows, assertTrue, fail}
 import org.junit.jupiter.api.Test
 
 import java.util.Properties
@@ -212,6 +213,21 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
     assertEquals(2, otherNodeState.zkControllerEpochZkVersion())
     assertEquals(3001, otherNodeState.kraftControllerId())
     assertEquals(43, otherNodeState.kraftControllerEpoch())
+  }
+
+  @Test
+  def testIsKRaftControllerRegistered(): Unit = {
+    assertFalse(migrationClient.isKRaftControllerRegistered)
+
+    zkClient.registerControllerAndIncrementControllerEpoch(100)
+    assertFalse(migrationClient.isKRaftControllerRegistered)
+
+    migrationState = migrationClient.claimControllerLeadership(migrationState)
+    assertTrue(migrationClient.isKRaftControllerRegistered)
+
+    // Reverting to ZK mode deletes the KRaft controller registration
+    zkClient.deletePath(ControllerZNode.path)
+    assertFalse(migrationClient.isKRaftControllerRegistered)
   }
 
   @Test

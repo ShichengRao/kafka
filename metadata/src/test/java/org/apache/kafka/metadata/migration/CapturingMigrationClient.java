@@ -106,6 +106,8 @@ class CapturingMigrationClient implements MigrationClient {
     private final DelegationTokenMigrationClient delegationTokenMigrationClient;
     private final MigrationBatchSupplier batchSupplier;
     private ZkMigrationLeadershipState state = null;
+    // Whether /controller holds the registration of a KRaft controller
+    public volatile boolean kraftControllerRegistered = true;
 
     CapturingMigrationClient(
         Set<Integer> brokerIdsInZk,
@@ -144,13 +146,20 @@ class CapturingMigrationClient implements MigrationClient {
         } else {
             this.state = state.withZkController(state.zkControllerEpoch() + 1, state.zkControllerEpochZkVersion() + 1);
         }
+        kraftControllerRegistered = true;
         return this.state;
     }
 
     @Override
     public ZkMigrationLeadershipState releaseControllerLeadership(ZkMigrationLeadershipState state) {
         this.state = state.withUnknownZkController();
+        kraftControllerRegistered = false;
         return this.state;
+    }
+
+    @Override
+    public boolean isKRaftControllerRegistered() {
+        return kraftControllerRegistered;
     }
 
 

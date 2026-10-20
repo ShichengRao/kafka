@@ -70,6 +70,14 @@ public interface MigrationClient {
      */
     ZkMigrationLeadershipState releaseControllerLeadership(ZkMigrationLeadershipState state);
 
+    /**
+     * Check whether the /controller ZNode holds the registration of a KRaft controller, as it does once the migration
+     * has started. It holds the registration of a ZK broker, or nothing, once the cluster is reverted to ZK mode.
+     *
+     * @return True if a KRaft controller is registered as the controller in ZooKeeper.
+     */
+    boolean isKRaftControllerRegistered();
+
     TopicMigrationClient topicClient();
 
     ConfigMigrationClient configClient();

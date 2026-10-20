@@ -695,6 +695,25 @@ public class KRaftMigrationDriver implements MetadataPublisher {
             // The leader epoch check in checkDriverState prevents us from getting stuck retrying this event after a
             // new leader has been seen.
             if (checkDriverState(MigrationDriverState.BECOME_CONTROLLER, this)) {
+                // A KRaft controller is registered in /controller for the whole migration. If it is not, the cluster
+                // was reverted to ZK mode after the migration recorded in /migration, so ZK has the latest metadata.
+                if (migrationLeadershipState.initialZkMigrationComplete() && !zkMigrationClient.isKRaftControllerRegistered()) {
+                    if (image.features().zkMigrationState() == ZkMigrationState.PRE_MIGRATION) {
+                        log.warn("The migration state in ZK says the metadata was migrated up to offset {}, but the " +
+                            "controller is not a KRaft controller and the KRaft metadata has not been migrated. This state " +
+                            "was left behind by a migration that was reverted to ZK mode. Migrating the metadata from ZK again.",
+                            migrationLeadershipState.kraftMetadataOffset());
+                        applyMigrationOperation("Discarded the migration state of a reverted migration",
+                            state -> state.withKRaftMetadataOffsetAndEpoch(-1, -1));
+                    } else {
+                        log.error("Not becoming the controller of the ZK brokers, since the cluster was reverted to ZK " +
+                            "mode after the KRaft metadata was migrated. Writing the KRaft metadata to ZK would undo the " +
+                            "changes made in ZK mode since then. To migrate again, start KRaft controllers without " +
+                            "metadata and delete the /migration ZNode.");
+                        transitionTo(MigrationDriverState.INACTIVE);
+                        return;
+                    }
+                }
                 applyMigrationOperation("Claimed ZK controller leadership", zkMigrationClient::claimControllerLeadership, true);
                 if (migrationLeadershipState.zkControllerEpochZkVersion() == ZkMigrationLeadershipState.UNKNOWN_ZK_VERSION) {
                     log.info("Unable to claim leadership, will retry until we learn of a different KRaft leader");
