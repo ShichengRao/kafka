@@ -25,7 +25,7 @@ import org.apache.kafka.common.metadata.{ConfigRecord, MetadataRecordType, Parti
 import org.apache.kafka.common.{DirectoryId, TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.image.{MetadataDelta, MetadataImage, MetadataProvenance}
 import org.apache.kafka.metadata.migration.TopicMigrationClient.{TopicVisitor, TopicVisitorInterest}
-import org.apache.kafka.metadata.migration.{KRaftMigrationZkWriter, ZkMigrationLeadershipState}
+import org.apache.kafka.metadata.migration.{KRaftMigrationZkWriter, MigrationClientException, ZkMigrationLeadershipState}
 import org.apache.kafka.metadata.{LeaderRecoveryState, PartitionRegistration}
 import org.apache.kafka.server.config.ReplicationConfigs
 import org.apache.kafka.server.common.ApiMessageAndVersion
@@ -651,13 +651,11 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
   }
 
   /**
-   * Several committed record batches can be loaded as a single metadata delta, so one dual-write can cover several
-   * changes to the same partition. The partition state znode must still end up at the KRaft partition epoch, since that
-   * is the partition epoch ZK brokers have. Otherwise, after a rollback to ZK mode, those brokers would reject the
-   * LeaderAndIsr requests of the ZK controller and the ZK controller would reject their AlterPartition requests.
+   * Several committed record batches can be loaded as one metadata delta, so one dual-write can cover several changes
+   * to the same partition. The znode version must still reach the KRaft partition epoch that ZK brokers were sent.
    */
   @Test
-  def testDeltaWithSeveralPartitionChangesKeepsZkVersionAtPartitionEpoch(): Unit = {
+  def testDeltaWithSeveralChangesToOnePartition(): Unit = {
     val topicName = "test"
     val topicId = Uuid.randomUuid()
     val topicPartition = new TopicPartition(topicName, 0)
@@ -702,7 +700,7 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
   }
 
   @Test
-  def testUpdateTopicPartitionsWritesUntilZkVersionReachesPartitionEpoch(): Unit = {
+  def testUpdatePartitionsCatchesUpZkVersion(): Unit = {
     val partitionIds = 0 to 2
     zkClient.createTopicAssignment("test", Some(Uuid.randomUuid()),
       partitionIds.map(id => new TopicPartition("test", id) -> List(0, 1, 2)).toMap)
@@ -740,7 +738,7 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
   }
 
   @Test
-  def testCreatedPartitionStatesCatchUpWithPartitionEpoch(): Unit = {
+  def testCreatePartitionsCatchesUpZkVersion(): Unit = {
     def registration(replicas: Array[Int], partitionEpoch: Int): PartitionRegistration = new PartitionRegistration.Builder()
       .setReplicas(replicas)
       .setDirectories(DirectoryId.unassignedArray(replicas.length))
@@ -751,18 +749,43 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
       .setPartitionEpoch(partitionEpoch)
       .build()
 
+    assertEquals(0, migrationState.migrationZkVersion())
     val topicPartitions = Map(0 -> registration(Array(0, 1, 2), 3), 1 -> registration(Array(1, 2, 3), 0))
       .map { case (k, v) => Integer.valueOf(k) -> v }.asJava
     migrationState = migrationClient.topicClient().createTopic("test", Uuid.randomUuid(), topicPartitions, migrationState)
+    // One update of /migration for creating the topic, and one for catching up partition 0
+    assertEquals(2, migrationState.migrationZkVersion())
     assertEquals(3, zkClient.getTopicPartitionState(new TopicPartition("test", 0)).get.leaderAndIsr.partitionEpoch)
     assertEquals(0, zkClient.getTopicPartitionState(new TopicPartition("test", 1)).get.leaderAndIsr.partitionEpoch)
 
     val newPartitions = Map(2 -> registration(Array(2, 3, 4), 2))
       .map { case (k, v) => Integer.valueOf(k) -> v }.asJava
     migrationState = migrationClient.topicClient().createTopicPartitions(Map("test" -> newPartitions).asJava, migrationState)
+    assertEquals(4, migrationState.migrationZkVersion())
     val newPartitionState = zkClient.getTopicPartitionState(new TopicPartition("test", 2)).get.leaderAndIsr
     assertEquals(2, newPartitionState.partitionEpoch)
     assertEquals(List(2, 3, 4), newPartitionState.isr)
+  }
+
+  @Test
+  def testUpdatePartitionWithoutState(): Unit = {
+    zkClient.createTopicAssignment("test", Some(Uuid.randomUuid()), Map(new TopicPartition("test", 0) -> List(0, 1, 2)))
+    val partitions = Map(0 -> new PartitionRegistration.Builder()
+      .setReplicas(Array(0, 1, 2))
+      .setDirectories(DirectoryId.migratingArray(3))
+      .setIsr(Array(0, 1, 2))
+      .setLeader(0)
+      .setLeaderRecoveryState(LeaderRecoveryState.RECOVERED)
+      .setLeaderEpoch(1)
+      .setPartitionEpoch(3)
+      .build()
+    ).map { case (k, v) => Integer.valueOf(k) -> v }.asJava
+
+    // The partition state is not created, and /migration is not updated
+    assertThrows(classOf[MigrationClientException],
+      () => migrationClient.topicClient().updateTopicPartitions(Map("test" -> partitions).asJava, migrationState))
+    assertTrue(zkClient.getTopicPartitionState(new TopicPartition("test", 0)).isEmpty)
+    assertEquals(0, migrationClient.getOrCreateMigrationRecoveryState(migrationState).migrationZkVersion())
   }
 
   private class CapturingTopicVisitor extends TopicVisitor {

@@ -264,9 +264,8 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
   }
 
   /**
-   * Make sure the version of each partition state znode is at least the KRaft partition epoch of that partition,
-   * without writing partitions that are already caught up. This is needed after partition state znodes are created,
-   * since they start at version 0 even if the partition has changed in KRaft since it was created.
+   * Catch up the versions of the given partition state znodes with their KRaft partition epochs. Newly created
+   * znodes start at version 0, even if the partition has already changed in KRaft.
    */
   private def catchUpPartitionStateZkVersions(
     topicPartitions: util.Map[String, util.Map[Integer, PartitionRegistration]],
@@ -305,19 +304,11 @@ class ZkTopicMigrationClient(zkClient: KafkaZkClient) extends TopicMigrationClie
   }
 
   /**
-   * Build the requests that write the given partition states to ZK.
-   *
-   * The ZK controller uses the version of a partition state znode as the partition epoch, while during the migration
-   * ZK brokers receive the KRaft partition epoch, both in LeaderAndIsr requests and in AlterPartition responses.
-   * Every SetData increments the znode version by one, but one write may cover several KRaft partition changes,
-   * since several committed record batches can be loaded as one metadata delta. That leaves the znode version behind
-   * the partition epoch the brokers have. If the cluster is then rolled back to ZK mode, a broker that has not been
-   * restarted yet rejects every LeaderAndIsr request from the ZK controller because its partition epoch is older, and
-   * the ZK controller rejects that broker's AlterPartition requests because their partition epoch is newer. The ISR of
-   * the partition can then never change again (KAFKA-18871).
-   *
-   * To prevent this, a partition state is written as many times as needed for the znode version to reach the KRaft
-   * partition epoch, and at least `minWritesPerPartition` times.
+   * Build the requests that write the given partition states to ZK. The ZK controller uses the znode version as the
+   * partition epoch, while ZK brokers are sent the KRaft partition epoch during the migration. Since one write can
+   * cover several KRaft partition changes, each partition is written as many times as needed for its znode version
+   * to reach the KRaft partition epoch, and at least `minWritesPerPartition` times. Otherwise, after a rollback to
+   * ZK mode, brokers would reject the LeaderAndIsr requests of the ZK controller as stale.
    */
   private def partitionStateWriteRequests(
     registrations: Seq[(TopicPartition, PartitionRegistration)],
