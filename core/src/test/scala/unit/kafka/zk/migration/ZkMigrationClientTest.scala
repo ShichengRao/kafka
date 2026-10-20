@@ -21,7 +21,7 @@ import kafka.controller.{LeaderIsrAndControllerEpoch, ReplicaAssignment}
 import kafka.coordinator.transaction.{ProducerIdManager, ZkProducerIdManager}
 import org.apache.kafka.common.config.{ConfigResource, SslConfigs, TopicConfig}
 import org.apache.kafka.common.errors.ControllerMovedException
-import org.apache.kafka.common.metadata.{ConfigRecord, MetadataRecordType, PartitionRecord, ProducerIdsRecord, TopicRecord}
+import org.apache.kafka.common.metadata.{ConfigRecord, MetadataRecordType, PartitionChangeRecord, PartitionRecord, ProducerIdsRecord, TopicRecord}
 import org.apache.kafka.common.{DirectoryId, TopicIdPartition, TopicPartition, Uuid}
 import org.apache.kafka.image.{MetadataDelta, MetadataImage, MetadataProvenance}
 import org.apache.kafka.metadata.migration.TopicMigrationClient.{TopicVisitor, TopicVisitorInterest}
@@ -642,6 +642,127 @@ class ZkMigrationClientTest extends ZkMigrationTestHarness {
       assertEquals(List(2, 3, 4), state.leaderAndIsr.isr)
       assertEquals(LeaderRecoveryState.RECOVERED, state.leaderAndIsr.leaderRecoveryState)
     }
+
+    // The znode versions of both the existing and the created partition states catch up with the KRaft partition epoch
+    assignment.keys.foreach { topicPartition =>
+      assertEquals(10, zkClient.getTopicPartitionState(topicPartition).get.leaderAndIsr.partitionEpoch,
+        s"Unexpected partition state znode version for $topicPartition")
+    }
+  }
+
+  /**
+   * Several committed record batches can be loaded as a single metadata delta, so one dual-write can cover several
+   * changes to the same partition. The partition state znode must still end up at the KRaft partition epoch, since that
+   * is the partition epoch ZK brokers have. Otherwise, after a rollback to ZK mode, those brokers would reject the
+   * LeaderAndIsr requests of the ZK controller and the ZK controller would reject their AlterPartition requests.
+   */
+  @Test
+  def testDeltaWithSeveralPartitionChangesKeepsZkVersionAtPartitionEpoch(): Unit = {
+    val topicName = "test"
+    val topicId = Uuid.randomUuid()
+    val topicPartition = new TopicPartition(topicName, 0)
+    val kraftWriter = new KRaftMigrationZkWriter(migrationClient, fail(_))
+
+    val createDelta = new MetadataDelta(MetadataImage.EMPTY)
+    createDelta.replay(new TopicRecord().setTopicId(topicId).setName(topicName))
+    createDelta.replay(new PartitionRecord()
+      .setTopicId(topicId)
+      .setPartitionId(0)
+      .setReplicas(List(0, 1, 2).map(int2Integer).asJava)
+      .setIsr(List(0, 1, 2).map(int2Integer).asJava)
+      .setLeader(0)
+      .setLeaderEpoch(0)
+      .setPartitionEpoch(0))
+    val createdImage = createDelta.apply(MetadataProvenance.EMPTY)
+    kraftWriter.handleDelta(MetadataImage.EMPTY, createdImage, createDelta, (_, _, operation) => {
+      migrationState = operation(migrationState)
+    })
+    assertEquals(0, zkClient.getTopicPartitionState(topicPartition).get.leaderAndIsr.partitionEpoch)
+
+    // A replica drops out of the ISR and rejoins it, and both changes are loaded in the same delta
+    val isrDelta = new MetadataDelta(createdImage)
+    isrDelta.replay(new PartitionChangeRecord().setTopicId(topicId).setPartitionId(0)
+      .setIsr(List(0, 2).map(int2Integer).asJava))
+    isrDelta.replay(new PartitionChangeRecord().setTopicId(topicId).setPartitionId(0)
+      .setIsr(List(0, 2, 1).map(int2Integer).asJava))
+    val isrImage = isrDelta.apply(MetadataProvenance.EMPTY)
+    val kraftPartition = isrImage.topics().getPartition(topicId, 0)
+    assertEquals(2, kraftPartition.partitionEpoch)
+
+    val migrationZkVersion = migrationState.migrationZkVersion()
+    kraftWriter.handleDelta(createdImage, isrImage, isrDelta, (_, _, operation) => {
+      migrationState = operation(migrationState)
+    })
+
+    val zkPartitionState = zkClient.getTopicPartitionState(topicPartition).get.leaderAndIsr
+    assertEquals(List(0, 2, 1), zkPartitionState.isr)
+    assertEquals(kraftPartition.leaderEpoch, zkPartitionState.leaderEpoch)
+    assertEquals(kraftPartition.partitionEpoch, zkPartitionState.partitionEpoch)
+    assertEquals(migrationZkVersion + 1, migrationState.migrationZkVersion())
+  }
+
+  @Test
+  def testUpdateTopicPartitionsWritesUntilZkVersionReachesPartitionEpoch(): Unit = {
+    val partitionIds = 0 to 2
+    zkClient.createTopicAssignment("test", Some(Uuid.randomUuid()),
+      partitionIds.map(id => new TopicPartition("test", id) -> List(0, 1, 2)).toMap)
+    zkClient.createTopicPartitionStatesRaw(partitionIds.map { id =>
+      new TopicPartition("test", id) -> LeaderIsrAndControllerEpoch(
+        LeaderAndIsr(0, 5, List(0, 1, 2), LeaderRecoveryState.RECOVERED, -1), 1)
+    }.toMap, 0)
+    partitionIds.foreach { id =>
+      assertEquals(0, zkClient.getTopicPartitionState(new TopicPartition("test", id)).get.leaderAndIsr.partitionEpoch)
+    }
+
+    def registration(partitionEpoch: Int): PartitionRegistration = new PartitionRegistration.Builder()
+      .setReplicas(Array(0, 1, 2))
+      .setDirectories(DirectoryId.migratingArray(3))
+      .setIsr(Array(0, 1))
+      .setLeader(0)
+      .setLeaderRecoveryState(LeaderRecoveryState.RECOVERED)
+      .setLeaderEpoch(5)
+      .setPartitionEpoch(partitionEpoch)
+      .build()
+
+    // Partition 0 is behind the KRaft partition epoch, partition 1 is in step with it, and partition 2 is ahead of it
+    val partitions = Map(0 -> registration(4), 1 -> registration(1), 2 -> registration(0))
+      .map { case (k, v) => Integer.valueOf(k) -> v }.asJava
+    val migrationZkVersion = migrationState.migrationZkVersion()
+    migrationState = migrationClient.topicClient().updateTopicPartitions(Map("test" -> partitions).asJava, migrationState)
+    assertEquals(migrationZkVersion + 1, migrationState.migrationZkVersion())
+
+    val expectedZkVersions = Map(0 -> 4, 1 -> 1, 2 -> 1)
+    expectedZkVersions.foreach { case (id, expectedZkVersion) =>
+      val leaderAndIsr = zkClient.getTopicPartitionState(new TopicPartition("test", id)).get.leaderAndIsr
+      assertEquals(expectedZkVersion, leaderAndIsr.partitionEpoch, s"Unexpected znode version for partition $id")
+      assertEquals(List(0, 1), leaderAndIsr.isr)
+    }
+  }
+
+  @Test
+  def testCreatedPartitionStatesCatchUpWithPartitionEpoch(): Unit = {
+    def registration(replicas: Array[Int], partitionEpoch: Int): PartitionRegistration = new PartitionRegistration.Builder()
+      .setReplicas(replicas)
+      .setDirectories(DirectoryId.unassignedArray(replicas.length))
+      .setIsr(replicas)
+      .setLeader(replicas.head)
+      .setLeaderRecoveryState(LeaderRecoveryState.RECOVERED)
+      .setLeaderEpoch(1)
+      .setPartitionEpoch(partitionEpoch)
+      .build()
+
+    val topicPartitions = Map(0 -> registration(Array(0, 1, 2), 3), 1 -> registration(Array(1, 2, 3), 0))
+      .map { case (k, v) => Integer.valueOf(k) -> v }.asJava
+    migrationState = migrationClient.topicClient().createTopic("test", Uuid.randomUuid(), topicPartitions, migrationState)
+    assertEquals(3, zkClient.getTopicPartitionState(new TopicPartition("test", 0)).get.leaderAndIsr.partitionEpoch)
+    assertEquals(0, zkClient.getTopicPartitionState(new TopicPartition("test", 1)).get.leaderAndIsr.partitionEpoch)
+
+    val newPartitions = Map(2 -> registration(Array(2, 3, 4), 2))
+      .map { case (k, v) => Integer.valueOf(k) -> v }.asJava
+    migrationState = migrationClient.topicClient().createTopicPartitions(Map("test" -> newPartitions).asJava, migrationState)
+    val newPartitionState = zkClient.getTopicPartitionState(new TopicPartition("test", 2)).get.leaderAndIsr
+    assertEquals(2, newPartitionState.partitionEpoch)
+    assertEquals(List(2, 3, 4), newPartitionState.isr)
   }
 
   private class CapturingTopicVisitor extends TopicVisitor {
